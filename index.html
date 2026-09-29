@@ -10,6 +10,7 @@
 @media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;color-scheme:dark}}
 :root[data-theme="dark"]{--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;color-scheme:dark}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding-bottom:calc(70px + env(safe-area-inset-bottom,0px));font-variant-numeric:tabular-nums}
 main{max-width:640px;margin:0 auto;padding:12px 16px}
 .sync{max-width:640px;margin:8px auto 0;padding:8px 12px;border-radius:8px;background:var(--danger-bg);color:var(--danger);font-size:.9rem}
@@ -25,7 +26,13 @@ button.small{padding:3px 8px;font-size:.85rem}
 input,select{font:inherit;width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text)}
 label{display:block;font-size:.85rem;color:var(--muted);margin:8px 0 2px}
 nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
-nav button{flex:1;border:0;border-radius:0;padding:14px 4px;background:none}
+nav button{flex:1;min-width:0;border:0;border-radius:0;padding:14px 2px;background:none;font-size:.85rem}
+.stepper{display:flex;align-items:center;gap:4px}.stepper input{width:52px;text-align:center;padding:6px}
+.check{display:flex;align-items:center;gap:10px;margin:0;padding:10px 0;color:var(--text);font-size:1rem;border-top:1px solid var(--line);cursor:pointer}
+.check:first-of-type{border-top:0}
+.check input{width:22px;height:22px;flex:none;accent-color:var(--accent)}
+.check.done .what{text-decoration:line-through;color:var(--muted)}
+.check .what{flex:1;min-width:0}
 nav button.on{color:var(--accent);font-weight:600}
 .bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:3px 0 8px}
 .bar>i{display:block;height:100%;background:var(--accent)}
@@ -71,8 +78,10 @@ const num = v => Math.max(0, parseFloat(String(v).replace(",", ".")) || 0);
 let state = load();
 let ui = { tab: "today", date: today() };
 
+// Shopping: portions planned per recipe, ticked items, and extra free-text items.
+function emptyShop() { return { plan: {}, checked: {}, extra: [] }; }
 function load() {
-  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 } };
+  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop() };
   try { return Object.assign(def, JSON.parse(localStorage.getItem(KEY)) || {}); } catch { return def; }
 }
 
@@ -102,6 +111,7 @@ function save() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
   if (!db) return;
   put("app/settings", settingsBody());
+  put("app/shopping", state.shop);
   for (const d of loadedDays) if (state.log[d]) put("days/" + d, { entries: state.log[d] });
 }
 // Live subscriptions: changes made on another device (or by Claude) show up without reloading.
@@ -136,7 +146,12 @@ async function connect() {
   try {
     const snap = await handle.doc("app/settings").get();
     db = handle;
-    if (snap.exists) { state.log = {}; applySettings(snap.data()); }
+    if (snap.exists) {
+      state.log = {}; applySettings(snap.data());
+      const sh = await handle.doc("app/shopping").get();
+      state.shop = sh.exists ? { ...emptyShop(), ...structuredClone(sh.data()) } : emptyShop();
+      synced["app/shopping"] = canon(state.shop);
+    }
     else {
       // First run in this account: carry over anything saved in this browser.
       Object.keys(state.log).forEach(d => loadedDays.add(d));
@@ -145,6 +160,11 @@ async function connect() {
     handle.doc("app/settings").onSnapshot(sn => {
       if (!sn.exists || sn.metadata.hasPendingWrites || chainBusy("app/settings") || canon(sn.data()) === synced["app/settings"]) return;
       applySettings(sn.data()); if (!dlg.open && !ui.loading) render();
+    }, () => {});
+    handle.doc("app/shopping").onSnapshot(sn => {
+      if (!sn.exists || sn.metadata.hasPendingWrites || chainBusy("app/shopping") || canon(sn.data()) === synced["app/shopping"]) return;
+      state.shop = { ...emptyShop(), ...structuredClone(sn.data()) }; synced["app/shopping"] = canon(state.shop);
+      if (ui.tab === "shop" && !dlg.open && !ui.loading) render();
     }, () => {});
     await watchDay(ui.date);
   } catch { syncErr = "Couldn't load your saved data. Reload the page to try again."; }
@@ -407,11 +427,11 @@ function closeDlg() { dlg.close(); }
 dlg.addEventListener("click", e => { if (e.target === dlg) closeDlg(); });
 
 // ---------- rendering ----------
-const TABS = [["today", "Today"], ["chat", "Assistant"], ["recipes", "Recipes"], ["ingredients", "Foods"], ["goals", "Goals"]];
+const TABS = [["today", "Today"], ["chat", "Assistant"], ["recipes", "Recipes"], ["shop", "Shop"], ["ingredients", "Foods"], ["goals", "Goals"]];
 function render() {
   document.getElementById("nav").innerHTML = TABS.map(([k, n]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}">${n}</button>`).join("");
   const hadFocus = document.activeElement?.id === "chatIn";
-  document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
+  document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, shop: viewShop, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
   if (ui.tab === "chat") { const log = document.getElementById("chatLog"); log && log.lastElementChild?.scrollIntoView({ block: "end" }); if (hadFocus) document.getElementById("chatIn")?.focus(); }
 }
 
@@ -476,6 +496,61 @@ function viewGoals() {
     <p class="muted" id="gcheck"></p><button class="primary">Save goals</button></form>
   <div class="card"><h3>Backup</h3><p class="muted">Data lives in this browser only. Export regularly.</p>
     <div class="row"><button data-act="export">Export</button><button data-act="import">Import</button></div></div>`;
+}
+
+// ---------- shopping ----------
+// Everything the planned portions need, added up per ingredient across recipes.
+function shoppingList() {
+  const need = {};
+  for (const [rid, portions] of Object.entries(state.shop.plan)) {
+    const rc = state.recipes.find(x => x.id === rid); if (!rc || !(portions > 0)) continue;
+    const scale = portions / (rc.servings || 1);
+    for (const it of rc.items) {
+      const i = ing(it.ingId); if (!i) continue;
+      const row = need[i.id] ||= { i, grams: 0, from: new Set() };
+      row.grams += itemGrams(it) * scale; row.from.add(rc.name);
+    }
+  }
+  return Object.values(need).map(x => {
+    const pc = pieceOf(x.i);
+    // Round up to what you'd actually buy: whole pieces/cans, grams to the next 5 or 10.
+    const qty = pc ? x.grams / pc.g : 0;
+    const step = x.grams > 100 ? 10 : 5, base = x.i.name.replace(/\s*\(.*?\)/g, "").trim().toLowerCase();
+    const label = pc ? countedName(Math.max(1, Math.ceil(qty - 0.05)), pc, base) : `${Math.ceil(x.grams / step) * step} g ${base}`;
+    const note = pc && Math.abs(qty - Math.round(qty)) > 0.05 ? `${r(qty, 1)} needed` : pc ? `${r(x.grams)} g` : "";
+    return { key: x.i.id, name: x.i.name, label, note, from: [...x.from].join(", ") };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// "3 onions", "2 bell peppers", "5 cloves garlic", "2 cans kidney beans".
+function countedName(n, pc, base) {
+  const words = base.split(/\s+/), bw = norm(base).join(" "), one = norm(pc.one).join(" "), unit = n == 1 ? pc.one : pc.many;
+  if (bw === one || bw.endsWith(" " + one)) return `${n} ${[...words.slice(0, words.length - pc.one.split(" ").length), unit].join(" ")}`;
+  if (bw.startsWith(one + " ")) return `${n} ${unit}`;
+  return `${n} ${unit} ${base}`;
+}
+
+function viewShop() {
+  const sh = state.shop, list = shoppingList(), recs = [...state.recipes].sort((a, b) => a.name.localeCompare(b.name));
+  const planned = recs.filter(rc => sh.plan[rc.id] > 0).length;
+  const left = list.filter(x => !sh.checked[x.key]).length + sh.extra.filter(x => !x.done).length;
+  const item = (key, label, sub, done, act) => `<label class="check${done ? " done" : ""}"><input type="checkbox" data-act="${act}" data-v="${esc(key)}" ${done ? "checked" : ""}><span class="what"><b>${label}</b>${sub ? `<div class="muted">${sub}</div>` : ""}</span></label>`;
+  return `<h2>Shopping</h2>
+  <div class="card"><h3>What are you cooking?</h3><p class="muted" style="margin-top:0">Set how many portions of each recipe you want. The list scales the ingredients to match.</p>
+    ${recs.length ? recs.map(rc => { const n = sh.plan[rc.id] || 0; return `<div class="item"><div style="min-width:0"><div>${esc(rc.name)}</div><div class="muted">recipe makes ${r(rc.servings, 2)}${n ? ` · ${r(n / rc.servings, 2)}× the recipe` : ""}</div></div>
+      <div class="stepper"><button class="small" data-act="shopStep" data-v="${rc.id}:-1" aria-label="Fewer portions">−</button><input inputmode="decimal" value="${n || ""}" placeholder="0" data-shop="${rc.id}" aria-label="Portions of ${esc(rc.name)}"><button class="small" data-act="shopStep" data-v="${rc.id}:1" aria-label="More portions">+</button></div></div>`; }).join("")
+      : `<p class="muted">Save a recipe first, then plan portions here.</p>`}</div>
+  <div class="card"><div class="row between"><h3>Shopping list</h3><span class="muted">${list.length + sh.extra.length ? `${left} left` : ""}</span></div>
+    ${list.length ? list.map(x => item(x.key, esc(x.label), [x.note, x.from].filter(Boolean).map(esc).join(" · "), sh.checked[x.key], "shopTick")).join("") : `<p class="muted">${planned ? "Those recipes have no ingredients." : "Pick portions above and the list appears here."}</p>`}
+    ${sh.extra.map(x => item(x.id, esc(x.text), "", x.done, "shopTickExtra")).join("")}
+    <form class="row" data-form="shopExtra" style="margin-top:10px"><input id="shopExtra" placeholder="Add something else, e.g. toilet paper" class="grow"><button class="small">Add</button></form>
+    <div class="row wrap" style="margin-top:12px">${list.length || sh.extra.length ? `<button class="small primary" data-act="shopCopy">Copy list</button><button class="small" data-act="shopUntick">Untick all</button><button class="small danger" data-act="shopClear">Clear list</button>` : ""}</div>
+    <p class="muted" id="copied" hidden>Copied. Paste it into your notes or a message.</p></div>`;
+}
+
+function shopText() {
+  const sh = state.shop;
+  return ["Shopping list", ...shoppingList().filter(x => !sh.checked[x.key]).map(x => `- ${x.label}`), ...sh.extra.filter(x => !x.done).map(x => `- ${x.text}`)].join("\n");
 }
 
 // ---------- forms ----------
@@ -788,6 +863,16 @@ const actions = {
   addEntry: v => entryDialog(v),
   aiApply: v => aiApply(v),
   aiReset: () => { ui.chat = []; ui.chatErr = ""; },
+  shopStep: v => { const [id, d] = v.split(":"), n = Math.max(0, (state.shop.plan[id] || 0) + +d); if (n) state.shop.plan[id] = n; else delete state.shop.plan[id]; save(); },
+  shopTick: v => { if (state.shop.checked[v]) delete state.shop.checked[v]; else state.shop.checked[v] = true; save(); },
+  shopTickExtra: v => { const x = state.shop.extra.find(e => e.id === v); if (x) { x.done = !x.done; save(); } },
+  shopUntick: () => { state.shop.checked = {}; state.shop.extra.forEach(x => x.done = false); save(); },
+  shopClear: async () => { if (await ask("Clear the planned portions, ticks and extra items?", "Clear")) { state.shop = emptyShop(); save(); render(); } },
+  shopCopy: async () => {
+    const text = shopText(), done = () => { const c = document.getElementById("copied"); if (c) c.hidden = false; };
+    try { await navigator.clipboard.writeText(text); done(); }
+    catch { openDlg(`<h3>Copy the list</h3><textarea id="shopTxt" rows="10" style="width:100%" readonly>${esc(text)}</textarea><button type="button" class="primary" data-close style="margin-top:8px">Done</button>`, d => d.querySelector("#shopTxt").select()); }
+  },
   aiExample: v => { ui.chatDraft = v; setTimeout(() => { const t = document.getElementById("chatIn"); t && (t.focus(), t.setSelectionRange(v.length, v.length)); }); },
   logRecipe: v => { ui.tab = "today"; entryDialog("Lunch", v); },
   delEntry: v => { state.log[ui.date] = dayEntries(ui.date).filter(e => e.id !== v); save(); },
@@ -800,7 +885,7 @@ const actions = {
   editRecipe: v => recipeDialog(v),
   favRecipe: v => { const rc = state.recipes.find(x => x.id === v); rc.fav = !rc.fav; save(); },
   dupRecipe: v => { const rc = structuredClone(state.recipes.find(x => x.id === v)); rc.id = uid(); rc.name += " (copy)"; rc.fav = false; state.recipes.push(rc); save(); },
-  delRecipe: async v => { if (await ask("Delete this recipe? Days you already logged keep their numbers.")) { state.recipes = state.recipes.filter(x => x.id !== v); save(); render(); } },
+  delRecipe: async v => { if (await ask("Delete this recipe? Days you already logged keep their numbers.")) { state.recipes = state.recipes.filter(x => x.id !== v); delete state.shop.plan[v]; save(); render(); } },
   export: async () => {
     // Backup includes every logged day, so fetch the ones not loaded yet.
     if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { if (!loadedDays.has(x.id)) { state.log[x.id] = structuredClone(x.data().entries || []); loadedDays.add(x.id); synced["days/" + x.id] = canon({ entries: state.log[x.id] }); } }); } catch {}
@@ -817,7 +902,7 @@ const actions = {
       try { d = JSON.parse(await inp.files[0].text()); if (!Array.isArray(d.ingredients) || !Array.isArray(d.recipes) || typeof d.log !== "object") throw 0; }
       catch { notice("That file isn't a backup from this app."); return; }
       if (!await ask("Replace your ingredients, recipes and goals with this backup? Days in the backup replace the same days here.", "Replace")) return;
-      state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log } };
+      state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log }, shop: d.shop || state.shop };
       Object.keys(d.log).forEach(x => loadedDays.add(x)); save(); render();
     };
     inp.click();
@@ -833,6 +918,8 @@ document.addEventListener("click", e => {
   if (!dlg.open) render();
 });
 document.addEventListener("change", e => {
+  if (e.target.type === "checkbox" && e.target.dataset.act) { actions[e.target.dataset.act](e.target.dataset.v); render(); return; }
+  if (e.target.dataset.shop) { const n = num(e.target.value); if (n) state.shop.plan[e.target.dataset.shop] = n; else delete state.shop.plan[e.target.dataset.shop]; save(); render(); return; }
   if (e.target.dataset.act === "pickDate" && e.target.value) goToDate(e.target.value);
 });
 document.addEventListener("input", e => {
@@ -845,6 +932,11 @@ document.addEventListener("keydown", e => {
   if (e.target.id === "chatIn" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); aiSend(e.target.value); }
 });
 document.addEventListener("submit", e => {
+  if (e.target.dataset.form === "shopExtra") {
+    e.preventDefault(); const t = document.getElementById("shopExtra").value.trim();
+    if (t) { state.shop.extra.push({ id: uid(), text: t, done: false }); save(); render(); document.getElementById("shopExtra")?.focus(); }
+    return;
+  }
   if (e.target.dataset.form === "chat") { e.preventDefault(); aiSend(document.getElementById("chatIn").value); return; }
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
   e.preventDefault();
