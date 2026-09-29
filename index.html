@@ -57,6 +57,22 @@ dialog::backdrop{background:rgb(0 0 0 / .5)}
 .msg.assistant{align-self:flex-start;background:var(--card);border:1px solid var(--line);border-bottom-left-radius:4px}
 .prop{margin:0;border-color:var(--accent)}
 .prop .item>span{white-space:nowrap}
+.pick{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
+.pick input[type=checkbox]{width:22px;height:22px;flex:none;accent-color:var(--accent)}
+.pick-name{flex:1;min-width:0}.pick-name .muted{font-size:.75rem}
+.pick-amt{width:58px;flex:none;padding:6px;text-align:right}
+.pick-unit{font-size:.85rem;color:var(--muted);width:3.6em;flex:none;overflow:hidden;text-overflow:ellipsis}
+.pick-kcal{font-size:.8rem;min-width:4.2em;text-align:right;flex:none;white-space:nowrap}
+.pick.off .pick-name,.pick.off .pick-amt,.pick.off .pick-unit{opacity:.45}
+.pick.off .pick-name div:first-child{text-decoration:line-through}
+.pick-title{font-weight:700;font-size:1.05rem;border-color:transparent;background:transparent;padding:4px 0}
+.pick-title:focus{border-color:var(--line);background:var(--bg);padding:4px 8px}
+.pick-sep{font-size:.8rem;font-weight:600;color:var(--muted);letter-spacing:.02em;margin:12px 0 2px}
+.pick-meta{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+label.inline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0;color:var(--text);font-size:.95rem}
+label.inline input:not([type=checkbox]){width:60px;padding:6px;text-align:center}
+label.inline input[type=checkbox]{width:20px;height:20px;accent-color:var(--accent)}
+label.inline select{width:auto;padding:6px}
 .ok{color:var(--accent);font-weight:600;margin:10px 0 0}
 .row.wrap{flex-wrap:wrap}
 .chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
@@ -460,7 +476,7 @@ function render() {
   document.getElementById("nav").innerHTML = TABS.map(([k, n]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}">${n}</button>`).join("");
   const hadFocus = document.activeElement?.id === "chatIn";
   document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, shop: viewShop, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
-  if (ui.tab === "chat") { const log = document.getElementById("chatLog"); log && log.lastElementChild?.scrollIntoView({ block: "end" }); if (hadFocus) document.getElementById("chatIn")?.focus(); }
+  if (ui.tab === "chat") { ui.chat.forEach((m, k) => m.proposal?.kind === "recipe" && refreshPick(k)); const log = document.getElementById("chatLog"); log && log.lastElementChild?.scrollIntoView({ block: "end" }); if (hadFocus) document.getElementById("chatIn")?.focus(); }
 }
 
 function progress(label, val, goal, unit) {
@@ -832,23 +848,23 @@ function recipeDialog(id, draft, onSaved) {
 // A chat with Claude (the "sample" capability) that turns "I made chili" into a saved recipe
 // and log entry. Claude asks what went in and how many portions; the page does the maths.
 ui.chat = []; ui.chatDraft = ""; ui.ai = undefined;
-const AI_RULES = `You are the assistant inside a personal calorie and macro tracking app. The user tells you, in casual and possibly misspelled English or Czech, what they ate or cooked. Your job is to turn that into data the app can save, asking short follow-up questions when needed.
+const AI_RULES = `You are the assistant inside a personal calorie and macro tracking app. The user tells you, in casual and possibly misspelled English or Czech, what they ate or cooked. Your job is to turn that into data the app can save. The app shows your recipe proposals as a checklist the user ticks and edits, so propose right away instead of asking questions.
 
 How to behave:
-- If they cooked something (e.g. "I made chilli con carne"), find out the ingredients with amounts and how many portions the batch made. Do not make them type everything: suggest a typical version with typical amounts for that dish and ask them to confirm or correct it, and ask how many portions it made. At most two questions per message.
-- Foods people count (onions, garlic cloves, eggs, bananas, slices of bread, cans, chilies, potatoes…) are tracked by number: give "pieces" (the count) AND "grams" (count × typical weight: 1 medium onion = 110 g, 1 garlic clove = 5 g, 1 egg = 50 g, 1 slice of bread = 30 g, 1 can of beans drained = 240 g, 1 can of chopped tomatoes = 400 g). Ask "how many onions / cloves of garlic?" rather than grams.
+- If they cooked something (e.g. "I made chilli con carne"), reply at once with a "recipe" proposal; do not ask questions first. List the usual ingredients of that dish with typical home-cooking amounts and "typical": true, then 3-6 common optional additions people often use in it with "typical": false (for chilli: sweetcorn, peppers, sour cream, grated cheese, dark chocolate…). The user ticks what they actually used and fixes amounts in the app. If they named ingredients or amounts, use exactly those (typical: true). Guess the number of portions if they didn't say (typical for the dish); they can change it.
+- Foods people count (onions, garlic cloves, eggs, bananas, slices of bread, cans, chilies, potatoes…) are tracked by number: give "pieces" (the count) AND "grams" (count × typical weight: 1 medium onion = 110 g, 1 garlic clove = 5 g, 1 egg = 50 g, 1 slice of bread = 30 g, 1 can of beans drained = 240 g, 1 can of chopped tomatoes = 400 g). Never ask for grams of counted foods.
 - Convert spoons and cups to grams yourself (1 tbsp oil = 13 g, 1 tsp = 5 g) and say what you assumed.
 - Pasta, rice and grains: amounts are dry weight unless they say cooked. Meat: raw weight.
 - If they ate one of their saved recipes (listed below), log it instead of making a new one; ask how many servings if unclear.
 - If they just ate simple foods ("a banana and a coffee with milk"), log them directly with estimated grams.
-- Once you have enough (or they say "that's it", "yes", "ok"), make the proposal. You can still ask a question in "say" while proposing, but prefer proposing once the essentials are known.
+- If they reply with corrections after a proposal, send an updated full proposal.
 - For every item give typical nutrition per 100 g from standard food tables.
-- Keep "say" short, friendly and plain text. Reply in the language the user writes in.
+- Keep "say" short, friendly and plain text (with a recipe proposal, one sentence such as "Tick what you used and fix the amounts."). Reply in the language the user writes in.
 
 Reply with ONLY one JSON object of this shape:
 {"say": "text to show the user",
  "proposal": null
-   OR {"kind": "recipe", "name": "Chilli con carne", "servings": 4, "items": [{"name": "Beef mince", "grams": 500, "per100": {"kcal": 254, "p": 17.2, "c": 0, "f": 20}}, {"name": "Onion", "pieces": 2, "grams": 220, "per100": {"kcal": 40, "p": 1.1, "c": 9.3, "f": 0.1}}], "log": {"servings": 1, "meal": "Dinner"} or null}
+   OR {"kind": "recipe", "name": "Chilli con carne", "servings": 4, "items": [{"name": "Beef mince", "grams": 500, "typical": true, "per100": {"kcal": 254, "p": 17.2, "c": 0, "f": 20}}, {"name": "Onion", "pieces": 2, "grams": 220, "typical": true, "per100": {"kcal": 40, "p": 1.1, "c": 9.3, "f": 0.1}}, {"name": "Sweetcorn", "grams": 150, "typical": false, "per100": {"kcal": 86, "p": 3.3, "c": 19, "f": 1.2}}], "log": {"servings": 1, "meal": "Dinner"} or null}
    OR {"kind": "log", "items": [{"name": "Banana", "grams": 120, "meal": "Snack", "per100": {"kcal": 89, "p": 1.1, "c": 22.8, "f": 0.3}}]}
    OR {"kind": "log_recipe", "recipe": "exact saved recipe name", "servings": 1, "meal": "Breakfast"}}
 "meal" is one of Breakfast, Lunch, Dinner, Snack ("Snack" means anything outside the three meals). "log" inside a recipe proposal is set only if they said they ate some of it (or ate it just now).`;
@@ -894,11 +910,16 @@ function aiProposal(p) {
       : { name, kcal: num(c.kcal), p: num(c.p), c: num(c.c), f: num(c.f), src: "estimated by Claude from typical values" };
     // Counted foods: keep the count and use the app's piece weight.
     const qty = num(x.pieces), pc = qty && pieceOf(n);
-    return { name: own ? own.name : name, grams: pc ? qty * pc.g : grams, qty: pc ? qty : 0, pc, n, meal: meal(x.meal) };
+    // Counted foods start as a count of pieces; everything else in grams. "on" = ticked in the checklist.
+    const pcAny = pieceOf(n), useCount = pc || (pcAny && !grams);
+    return { name: own ? own.name : name, grams: pc ? qty * pc.g : grams, qty: pc ? qty : 0, pc, n, meal: meal(x.meal),
+      on: x.typical !== false, opt: x.typical === false, amt: useCount ? (qty || 1) : grams, unitPc: useCount ? pcAny : null };
   };
   if (p.kind === "recipe") {
     const items = (p.items || []).map(item).filter(Boolean); if (!items.length) return null;
-    return { kind: "recipe", name: String(p.name || "Recipe").trim(), servings: num(p.servings) || 1, items, log: p.log ? { servings: num(p.log.servings) || 1, meal: meal(p.log.meal) } : null };
+    const h = new Date().getHours();
+    return { kind: "recipe", name: String(p.name || "Recipe").trim(), servings: num(p.servings) || 1, items,
+      logOn: !!p.log, logServings: num(p.log?.servings) || 1, meal: p.log ? meal(p.log.meal) : h < 11 ? "Breakfast" : h < 16 ? "Lunch" : h < 22 ? "Dinner" : "Snack" };
   }
   if (p.kind === "log") { const items = (p.items || []).map(item).filter(Boolean); return items.length ? { kind: "log", items } : null; }
   if (p.kind === "log_recipe") {
@@ -908,15 +929,58 @@ function aiProposal(p) {
   return null;
 }
 
+const pickGrams = x => x.unitPc ? num(x.amt) * x.unitPc.g : num(x.amt);
+// Live totals for a checklist card, without re-rendering (keeps focus in the inputs).
+function refreshPick(k) {
+  const p = ui.chat[k]?.proposal; if (!p || p.done) return;
+  let t = ZERO(), n = 0;
+  p.items.forEach((x, i) => {
+    const g = pickGrams(x), kc = document.querySelector(`[data-kc="${k}:${i}"]`), row = document.querySelector(`[data-row="${k}:${i}"]`);
+    if (kc) kc.textContent = x.on ? `${r(x.n.kcal * g / 100)} kcal` : "";
+    if (row) row.classList.toggle("off", !x.on);
+    if (x.on) { t = add(t, x.n, g / 100); n++; }
+  });
+  const sv = num(p.servings) || 1, tot = document.querySelector(`[data-tot="${k}"]`), btn = document.querySelector(`[data-savebtn="${k}"]`);
+  if (tot) tot.innerHTML = `<div class="muted" style="margin-top:8px">${n} ingredient${n == 1 ? "" : "s"} · whole pot ${r(t.kcal)} kcal</div><div class="muted">Per portion</div><b>${macroLine(add(ZERO(), t, 1 / sv))}</b>`;
+  if (btn) btn.textContent = p.logOn ? `Save & log ${r(p.logServings, 2)} to ${mealName(p.meal)}` : "Save recipe";
+}
+async function aiAddItem(k) {
+  const p = ui.chat[k]?.proposal, inp = document.querySelector(`[data-pk="${k}"][data-pf="newName"]`); if (!p || !inp) return;
+  const raw = inp.value.trim(); if (!raw) return;
+  // "2 carrots" or "carrot 150" → name + amount
+  const m = raw.match(/^(\d+(?:[.,]\d+)?)\s*(g\b)?\s*(.+)$/i) || raw.match(/^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(g)?$/i);
+  const name = m ? (/^\d/.test(raw) ? m[3] : m[1]) : raw, amount = m ? num(/^\d/.test(raw) ? m[1] : m[2]) : 0, grams = m && (/^\d/.test(raw) ? m[2] : m[3]);
+  inp.disabled = true; inp.value = "Looking up…";
+  const n = await resolveFood(name);
+  if (!n) { inp.disabled = false; inp.value = raw; inp.placeholder = "Couldn't find that, try another name"; return; }
+  const pc = !grams && pieceOf(n);
+  p.items.push({ name: n.name || name, n, on: true, unitPc: pc || null, amt: amount || (pc ? 1 : 100) });
+  render();
+}
+
 function proposalCard(p, k) {
   const done = p.done ? `<p class="ok">${esc(p.done)}</p>` : "";
   if (p.kind === "recipe") {
-    const t = p.items.reduce((a, x) => add(a, x.n, x.grams / 100), ZERO()), per = add(ZERO(), t, 1 / p.servings);
-    return `<div class="card prop"><div class="row between"><b>${esc(p.name)}</b><span class="muted">${r(p.servings, 2)} servings</span></div>
-      ${p.items.map(x => `<div class="item"><div><div>${esc(x.name)} <span class="muted">${x.pc ? `${countLabel(x.qty, x.pc)} (${r(x.grams)} g)` : `${r(x.grams)} g`}</span></div><div class="muted">${esc(x.n.src)}</div></div><span class="muted">${r(x.n.kcal * x.grams / 100)} kcal</span></div>`).join("")}
-      <div class="muted" style="margin-top:6px">Per serving</div><b>${macroLine(per)}</b><div class="muted">Whole batch: ${r(t.kcal)} kcal</div>
-      ${done || `<div class="row wrap" style="margin-top:10px">${p.log ? `<button class="small primary" data-act="aiApply" data-v="${k}:log">Save &amp; log ${r(p.log.servings, 2)} to ${mealName(p.log.meal)}</button>` : ""}
-        <button class="small${p.log ? "" : " primary"}" data-act="aiApply" data-v="${k}:save">Save recipe</button><button class="small" data-act="aiApply" data-v="${k}:edit">Edit first</button></div>`}</div>`;
+    if (p.done) return `<div class="card prop"><b>${esc(p.name)}</b>${done}</div>`;
+    const row = (x, i) => `<div class="pick${x.on ? "" : " off"}" data-row="${k}:${i}">
+        <input type="checkbox" data-pk="${k}" data-pi="${i}" data-pf="on" ${x.on ? "checked" : ""} aria-label="Used ${esc(x.name)}">
+        <div class="pick-name"><div>${esc(x.name)}</div>${/estimated/.test(x.n.src) ? `<div class="muted">estimate</div>` : ""}</div>
+        <input class="pick-amt" inputmode="decimal" data-pk="${k}" data-pi="${i}" data-pf="amt" value="${r(x.amt, 2)}" aria-label="Amount of ${esc(x.name)}">
+        <span class="pick-unit">${x.unitPc ? esc(x.unitPc.many) : "g"}</span>
+        <span class="pick-kcal muted" data-kc="${k}:${i}"></span></div>`;
+    const firstOpt = p.items.findIndex(x => x.opt);
+    return `<div class="card prop" data-card="${k}">
+      <input class="pick-title" data-pk="${k}" data-pf="name" value="${esc(p.name)}" aria-label="Recipe name">
+      <p class="muted" style="margin:4px 0 8px">Tick what you used and fix the amounts (for the whole pot).</p>
+      ${p.items.map((x, i) => (i === firstOpt ? `<div class="pick-sep">Often added. Tick if you used them</div>` : "") + row(x, i)).join("")}
+      <div class="row" style="margin-top:8px"><input data-pk="${k}" data-pf="newName" placeholder="Something else? e.g. carrot" class="grow" style="min-width:0" aria-label="Add an ingredient"><button class="small" data-act="aiAddItem" data-v="${k}">+ Add</button></div>
+      <div class="pick-meta">
+        <label class="inline">Portions it made <input inputmode="decimal" data-pk="${k}" data-pf="servings" value="${r(p.servings, 2)}"></label>
+        <label class="inline"><input type="checkbox" data-pk="${k}" data-pf="logOn" ${p.logOn ? "checked" : ""}> I ate <input inputmode="decimal" data-pk="${k}" data-pf="logServings" value="${r(p.logServings, 2)}"> for
+          <select data-pk="${k}" data-pf="meal">${MEALS.map(m => `<option value="${m}" ${m === p.meal ? "selected" : ""}>${mealName(m)}</option>`).join("")}</select></label>
+      </div>
+      <div data-tot="${k}"></div>
+      <div class="row wrap" style="margin-top:10px"><button class="small primary" data-act="aiApply" data-v="${k}:save" data-savebtn="${k}">Save recipe</button><button class="small" data-act="aiApply" data-v="${k}:edit">Open in recipe editor</button></div></div>`;
   }
   if (p.kind === "log") {
     const t = p.items.reduce((a, x) => add(a, x.n, x.grams / 100), ZERO());
@@ -933,16 +997,17 @@ function aiApply(v) {
   const [k, how] = v.split(":"), p = ui.chat[k].proposal;
   const day = ui.date === today() ? "today" : ui.date;
   if (p.kind === "recipe") {
-    const finish = rc => {
-      if (how === "log" && p.log) pushEntry(p.log.meal, { name: rc.name, amount: `${r(p.log.servings, 2)} serving${p.log.servings == 1 ? "" : "s"}`, ...add(ZERO(), perServing(rc), p.log.servings) });
-      p.done = `Saved "${rc.name}"${how === "log" && p.log ? ` and logged ${r(p.log.servings, 2)} to ${mealName(p.log.meal)} (${day})` : ""}.`;
-    };
+    const used = p.items.filter(x => x.on && pickGrams(x) > 0);
+    if (!used.length) { const t = document.querySelector(`[data-tot="${k}"]`); if (t) t.innerHTML = `<p class="sync">Tick at least one ingredient.</p>`; return; }
     if (how === "edit") {
-      recipeDialog(null, { name: p.name, servings: p.servings, rows: p.items.map(x => ({ name: x.name, amt: x.pc ? x.qty : x.grams, unit: x.pc ? "pc" : "g", n: x.n, status: x.n.src })) }, rc => { p.done = `Saved "${rc.name}".`; });
+      recipeDialog(null, { name: p.name, servings: p.servings, rows: used.map(x => ({ name: x.name, amt: x.amt, unit: x.unitPc ? "pc" : "g", n: x.n, status: x.n.src })) }, rc => { p.done = `Saved "${rc.name}".`; });
       return;
     }
-    const rc = { id: uid(), name: p.name, servings: p.servings, fav: false, items: p.items.map(x => ({ ingId: ensureIngredient(x.name, x.n), grams: x.grams, ...(x.pc && { qty: x.qty, unit: "pc" }) })) };
-    state.recipes.push(rc); finish(rc);
+    const rc = { id: uid(), name: p.name || "Recipe", servings: num(p.servings) || 1, fav: false,
+      items: used.map(x => ({ ingId: ensureIngredient(x.name, x.n), grams: pickGrams(x), ...(x.unitPc && { qty: num(x.amt), unit: "pc" }) })) };
+    state.recipes.push(rc);
+    if (p.logOn) pushEntry(p.meal, { name: rc.name, amount: `${r(p.logServings, 2)} serving${p.logServings == 1 ? "" : "s"}`, ...add(ZERO(), perServing(rc), p.logServings) });
+    p.done = `Saved "${rc.name}" (${used.length} ingredients, ${r(rc.servings, 2)} portions)${p.logOn ? ` and logged ${r(p.logServings, 2)} to ${mealName(p.meal)} (${day})` : ""}.`;
   } else if (p.kind === "log") {
     p.items.forEach(x => { const i = ing(ensureIngredient(x.name, x.n)); pushEntry(x.meal, { name: i.name, amount: x.pc ? `${countLabel(x.qty, x.pc)} (${r(x.grams)} g)` : `${r(x.grams)} g`, ...add(ZERO(), i, x.grams / 100) }); });
     p.done = `Logged ${p.items.length} item${p.items.length == 1 ? "" : "s"} (${day}).`;
@@ -965,7 +1030,7 @@ function viewChat() {
   </div>
   ${ui.chatErr ? `<p class="sync" role="alert">${esc(ui.chatErr)}</p>` : ""}
   <form class="composer" data-form="chat"><textarea id="chatIn" rows="2" placeholder="e.g. I made chilli, 4 portions" ${ui.chatBusy ? "disabled" : ""}>${esc(ui.chatDraft)}</textarea><button class="primary" ${ui.chatBusy ? "disabled" : ""}>Send</button></form>
-  <p class="muted" style="margin-top:6px">Logs go to ${ui.date === today() ? "today" : ui.date}. Values are estimates; tap Edit first to adjust.</p>`;
+  <p class="muted" style="margin-top:6px">Logs go to ${ui.date === today() ? "today" : ui.date}. Values are estimates; fix any amount before saving.</p>`;
 }
 
 // ---------- events ----------
@@ -975,6 +1040,7 @@ const actions = {
   addEntry: v => entryDialog(v),
   calendar: () => calendarDialog(),
   aiApply: v => aiApply(v),
+  aiAddItem: v => aiAddItem(v),
   aiReset: () => { ui.chat = []; ui.chatErr = ""; },
   recCat: v => { ui.recCat = v; },
   shopAdd: v => { const rc = state.recipes.find(x => x.id === v); if (!rc) return; state.shop.plan[v] = rc.servings || 1; ui.shopQ = ""; save(); },
@@ -1032,13 +1098,21 @@ document.addEventListener("click", e => {
   actions[el.dataset.act](el.dataset.v);
   if (!dlg.open) render();
 });
+function pickField(el) {
+  const k = el.dataset.pk, p = ui.chat[k]?.proposal, f = el.dataset.pf; if (!p || f === "newName") return;
+  const v = el.type === "checkbox" ? el.checked : el.value;
+  if (el.dataset.pi != null) p.items[el.dataset.pi][f] = v; else p[f] = v;
+  refreshPick(k);
+}
 document.addEventListener("change", e => {
+  if (e.target.dataset.pk != null) { pickField(e.target); return; }
   if (e.target.type === "checkbox" && e.target.dataset.act) { actions[e.target.dataset.act](e.target.dataset.v); render(); return; }
   if (e.target.dataset.shop) { const n = num(e.target.value); if (n) state.shop.plan[e.target.dataset.shop] = n; else delete state.shop.plan[e.target.dataset.shop]; save(); render(); return; }
   if (e.target.dataset.act === "pickDate" && e.target.value) goToDate(e.target.value);
 });
 document.addEventListener("input", e => {
   if (e.target.id === "chatIn") { ui.chatDraft = e.target.value; return; }
+  if (e.target.dataset.pk != null) { pickField(e.target); return; }
   if (e.target.id === "recSearch") { ui.recQ = e.target.value; document.getElementById("recList").innerHTML = recipeCards(); return; }
   if (e.target.id === "shopSearch") { ui.shopQ = e.target.value; document.getElementById("shopResults").innerHTML = shopResults(); return; }
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
@@ -1047,6 +1121,7 @@ document.addEventListener("input", e => {
 });
 document.addEventListener("keydown", e => {
   if (e.target.id === "chatIn" && e.key === "Enter" && !e.shiftKey) { e.preventDefault(); aiSend(e.target.value); }
+  if (e.target.dataset.pf === "newName" && e.key === "Enter") { e.preventDefault(); aiAddItem(e.target.dataset.pk); }
 });
 document.addEventListener("submit", e => {
   if (e.target.dataset.form === "shopExtra") {
