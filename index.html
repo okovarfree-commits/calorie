@@ -59,6 +59,10 @@ dialog::backdrop{background:rgb(0 0 0 / .5)}
 .prop .item>span{white-space:nowrap}
 .ok{color:var(--accent);font-weight:600;margin:10px 0 0}
 .row.wrap{flex-wrap:wrap}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.tags{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 6px}
+.tag{font-size:.75rem;font-weight:600;letter-spacing:.02em;padding:2px 8px;border-radius:999px;border:1px solid currentColor}
+.tag-cal{color:var(--f)}.tag-protein{color:var(--p)}.tag-carb{color:var(--c)}
 .composer{display:flex;gap:8px;align-items:flex-end}
 .composer textarea{flex:1;min-width:0;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);resize:vertical}
 .dot-p{color:var(--p)}.dot-c{color:var(--c)}.dot-f{color:var(--f)}
@@ -476,18 +480,42 @@ function viewToday() {
     ${progress("Calories", t.kcal, g.kcal, "")}${progress("Protein", t.p, g.p, "g")}${progress("Carbs", t.c, g.c, "g")}${progress("Fat", t.f, g.f, "g")}</div>${meals}`;
 }
 
-function viewRecipes() {
-  const list = [...state.recipes].sort((a, b) => (b.fav || 0) - (a.fav || 0) || a.name.localeCompare(b.name));
-  return `<div class="row between"><h2>Recipes</h2><button class="primary" data-act="editRecipe">+ New</button></div>
-  ${list.length ? "" : `<p class="muted">No recipes yet. Tap + New, type what went in (e.g. "beef mince 500", "onion 150", "kidney beans 400") and how many servings it made — the macros are calculated for you.</p>`}
-  ${list.map(rc => { const t = recipeTotal(rc), s = perServing(rc); return `<div class="card">
+// Categories worked out from each recipe's macros per serving (a recipe can be in several).
+const CATS = [
+  ["cal", "High calorie", "600+ kcal per serving", m => m.kcal >= 600],
+  ["protein", "High protein", "30+ g protein, or 30%+ of its calories from protein", m => m.p >= 30 || (m.kcal > 0 && m.p * 4 / m.kcal >= 0.3)],
+  ["carb", "High carb", "45%+ of its calories from carbs", m => m.kcal > 0 && m.c * 4 / m.kcal >= 0.45],
+];
+const recipeCats = rc => { const m = perServing(rc); return CATS.filter(c => c[3](m)).map(c => c[0]); };
+
+function recipeCards() {
+  const q = norm(ui.recQ || ""), cat = ui.recCat || "all";
+  const list = [...state.recipes].sort((a, b) => (b.fav || 0) - (a.fav || 0) || a.name.localeCompare(b.name))
+    .filter(rc => (cat === "all" || recipeCats(rc).includes(cat)) && q.every(w => norm(rc.name).some(x => x.startsWith(w))));
+  if (!list.length) return `<p class="muted">No recipes ${cat === "all" ? "" : `in ${CATS.find(c => c[0] === cat)[1].toLowerCase()} `}${q.length ? `matching "${esc(ui.recQ)}"` : ""}.</p>`;
+  return list.map(rc => { const t = recipeTotal(rc), s = perServing(rc), cs = recipeCats(rc); return `<div class="card">
     <div class="row between"><b>${rc.fav ? "★ " : ""}${esc(rc.name)}</b><span class="muted">${rc.servings} serving${rc.servings == 1 ? "" : "s"}</span></div>
+    ${cs.length ? `<div class="tags">${cs.map(k => `<span class="tag tag-${k}">${CATS.find(c => c[0] === k)[1]}</span>`).join("")}</div>` : ""}
     <div class="muted">Per serving: ${macroLine(s)}</div><div class="muted">Whole batch: ${r(t.kcal)} kcal</div>
-    <div class="row" style="margin-top:8px"><button class="small primary" data-act="logRecipe" data-v="${rc.id}">Log</button>
+    <div class="row wrap" style="margin-top:8px"><button class="small primary" data-act="logRecipe" data-v="${rc.id}">Log</button>
     <button class="small" data-act="favRecipe" data-v="${rc.id}">${rc.fav ? "Unstar" : "★ Favorite"}</button>
     <button class="small" data-act="editRecipe" data-v="${rc.id}">Edit</button>
     <button class="small" data-act="dupRecipe" data-v="${rc.id}">Copy</button>
-    <button class="small danger" data-act="delRecipe" data-v="${rc.id}">✕</button></div></div>`; }).join("")}`;
+    <button class="small danger" data-act="delRecipe" data-v="${rc.id}" aria-label="Delete ${esc(rc.name)}">✕</button></div></div>`; }).join("");
+}
+
+function viewRecipes() {
+  if (!state.recipes.length) return `<div class="row between"><h2>Recipes</h2><button class="primary" data-act="editRecipe">+ New</button></div>
+  <p class="muted">No recipes yet. Tap + New, type what went in (e.g. "beef mince 500", "onion 150", "kidney beans 400") and how many servings it made — the macros are calculated for you.</p>`;
+  const cat = ui.recCat || "all", count = k => state.recipes.filter(rc => recipeCats(rc).includes(k)).length;
+  return `<div class="row between"><h2>Recipes</h2><button class="primary" data-act="editRecipe">+ New</button></div>
+  <input id="recSearch" type="search" placeholder="Search recipes" value="${esc(ui.recQ || "")}" autocomplete="off" aria-label="Search recipes">
+  <div class="chips" style="margin:10px 0 12px" role="group" aria-label="Category">
+    <button class="small chip${cat === "all" ? " on" : ""}" data-act="recCat" data-v="all" aria-pressed="${cat === "all"}">All ${state.recipes.length}</button>
+    ${CATS.map(([k, name, why]) => `<button class="small chip${cat === k ? " on" : ""}" data-act="recCat" data-v="${k}" aria-pressed="${cat === k}" title="${why}">${name} ${count(k)}</button>`).join("")}
+  </div>
+  ${cat !== "all" ? `<p class="muted" style="margin:-4px 0 10px">${CATS.find(c => c[0] === cat)[2]}.</p>` : ""}
+  <div id="recList">${recipeCards()}</div>`;
 }
 
 function viewIngredients() {
@@ -887,6 +915,7 @@ const actions = {
   addEntry: v => entryDialog(v),
   aiApply: v => aiApply(v),
   aiReset: () => { ui.chat = []; ui.chatErr = ""; },
+  recCat: v => { ui.recCat = v; },
   shopAdd: v => { const rc = state.recipes.find(x => x.id === v); if (!rc) return; state.shop.plan[v] = rc.servings || 1; ui.shopQ = ""; save(); },
   shopStep: v => { const [id, d] = v.split(":"), n = Math.max(0, (state.shop.plan[id] || 0) + +d); if (n) state.shop.plan[id] = n; else delete state.shop.plan[id]; save(); },
   shopTick: v => { if (state.shop.checked[v]) delete state.shop.checked[v]; else state.shop.checked[v] = true; save(); },
@@ -949,6 +978,7 @@ document.addEventListener("change", e => {
 });
 document.addEventListener("input", e => {
   if (e.target.id === "chatIn") { ui.chatDraft = e.target.value; return; }
+  if (e.target.id === "recSearch") { ui.recQ = e.target.value; document.getElementById("recList").innerHTML = recipeCards(); return; }
   if (e.target.id === "shopSearch") { ui.shopQ = e.target.value; document.getElementById("shopResults").innerHTML = shopResults(); return; }
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
   const kcalFromMacros = num(f.p.value) * 4 + num(f.c.value) * 4 + num(f.f.value) * 9;
