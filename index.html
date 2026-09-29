@@ -376,9 +376,12 @@ function applySettings(b) {
 async function connect() {
   if (!window.claude?.use) { ui.ai = null; return; }
   claude.use("sample").then(sm => {
-    ui.ai = sm; if (ui.tab === "chat") render();
-    // Label scanning needs a view that can send photos to Claude.
-    sm?.limits?.().then(l => { ui.scan = l?.images || null; if (ui.scan && !dlg.open) render(); }, () => {});
+    ui.ai = sm;
+    // Label scanning sends a photo to Claude. Show the camera whenever Claude is available; the view's photo
+    // limits are applied when known, and a view that can't send photos says so when the button is tapped.
+    ui.scan = sm ? DEFAULT_SCAN : null;
+    if (!dlg.open && !ui.loading) render();
+    sm?.limits?.().then(l => { if (l?.images) ui.scan = l.images; }, () => {});
   });
   const handle = await claude.use("db"); if (!handle) return;
   ui.loading = true; render();
@@ -961,6 +964,7 @@ function entryDialog(meal, preRecipe, preFood) {
 }
 
 // ---------- scan a package label ----------
+const DEFAULT_SCAN = { maxCount: 1, maxInputBytes: 20e6, mediaTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"] };
 // Take or pick a photo of the nutrition table; Claude reads it and the "New food" sheet opens pre-filled to check.
 function scanLabel(afterSave) {
   if (!ui.scan || !ui.ai) { notice("Scanning labels needs the app open in Claude (claude.ai or the Claude app)."); return; }
@@ -979,7 +983,7 @@ Read the product name (with brand) and the nutrition table. Reply with ONLY this
 Rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide by 4.184. If only per-serving values are printed, convert to per 100 g using the serving size. "serving" is the size of one piece/portion if the pack states it (a bar, a scoop, a slice, a can, a bottle, a biscuit), else null; "name" is a short singular word for it. Use "carbohydrate" (not "of which sugars") and "fat" (not "of which saturates"). If a number is unreadable, give your best estimate and say so in "note". If no nutrition table is visible, reply {"name": null, "note": "what you can see instead"}.`, { images: [file], cache: false });
     } catch (e) {
       closeDlg();
-      notice({ images_unavailable: "Photos can't be sent from this view.", image_rejected: "That photo couldn't be read. Try a JPEG or PNG under 20 MB.", rate_limited: "Too many requests for now. Try again in a minute.", not_granted: "This app isn't allowed to use Claude. Allow it when asked, then try again." }[e?.code] || "Couldn't read the label. Try again with a sharper photo of the nutrition table.");
+      notice({ images_unavailable: "This version of the Claude app can't send photos to the page yet. Open the app in a browser at claude.ai, or update the Claude app, and try again.", image_rejected: "That photo couldn't be read. Try a JPEG or PNG under 20 MB.", rate_limited: "Too many requests for now. Try again in a minute.", not_granted: "This app isn't allowed to use Claude. Allow it when asked, then try again." }[e?.code] || "Couldn't read the label. Try again with a sharper photo of the nutrition table.");
       return;
     }
     const ok = x => typeof x === "number" && isFinite(x) && x >= 0 && x <= 950, v = j?.per100 || {};
