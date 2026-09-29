@@ -171,6 +171,11 @@ nav button.on .ic{background:var(--accent-soft)}
 .hint{font-size:.85rem;color:var(--muted);margin:8px 0 0}
 .card>.entry:last-child{padding-bottom:0}
 
+.fab{position:fixed;z-index:6;right:max(16px,calc(50vw - 264px));bottom:calc(84px + env(safe-area-inset-bottom,0px));width:56px;height:56px;min-height:0;padding:0;border-radius:18px;
+  background:var(--accent);color:var(--on-accent);box-shadow:0 8px 24px -6px color-mix(in srgb,var(--accent) 55%,transparent),0 2px 6px rgb(0 0 0/.12)}
+.fab:hover{background:color-mix(in srgb,var(--accent) 88%,var(--text))}
+.fab svg{width:26px;height:26px}
+
 /* lists */
 .item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
 .item:first-child,.card>h3+.item,.card>.item:first-of-type{border-top:0}
@@ -766,7 +771,8 @@ function viewToday() {
     <button class="iconbtn" data-act="date" data-v="${shift(1)}" aria-label="Next day">${I.right}</button></div>
   <section class="card"><div class="sum">${ring}<div class="macros">${mrow("Protein", "p", "g")}${mrow("Carbs", "c", "g")}${mrow("Fat", "f", "g")}</div></div>
     <div class="sum-foot"><span><b>${r(t.kcal)}</b> eaten of ${r(g.kcal)} kcal</span>${st === "hit" ? `<span class="pill hit">Goal hit</span>` : st === "miss" ? `<span class="pill miss">Goal missed</span>` : ""}</div></section>
-  ${meals}`;
+  ${meals}
+  ${ui.scan ? `<div style="height:64px"></div><button class="fab" data-act="scanToday" aria-label="Scan a package label">${I.camera}</button>` : ""}`;
 }
 
 // Categories worked out from each recipe's macros per serving (a recipe can be in several).
@@ -1381,6 +1387,8 @@ const actions = {
   delEntry: v => { state.log[ui.date] = dayEntries(ui.date).filter(e => e.id !== v); save(); },
   editIng: v => ingDialog(v),
   scanIng: () => scanLabel(),
+  // Camera button on Today: scan a pack, then log it to the meal that fits the time of day.
+  scanToday: () => { const h = new Date().getHours(); scanLabel(food => entryDialog(h < 11 ? "Breakfast" : h < 16 ? "Lunch" : h < 22 ? "Dinner" : "Snack", null, food.name)); },
   delIng: async v => {
     const used = state.recipes.filter(rc => rc.items.some(it => it.ingId === v)).map(rc => rc.name);
     if (!await ask(used.length ? `Used in: ${used.join(", ")}. Delete anyway? It will count as 0 in those recipes.` : "Delete this ingredient?")) return;
