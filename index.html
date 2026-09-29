@@ -819,7 +819,7 @@ function viewRecipes() {
 function viewIngredients() {
   const list = [...state.ingredients].sort((a, b) => a.name.localeCompare(b.name));
   return `<button class="small" data-act="tab" data-v="goals" style="margin:2px 0 4px;padding-left:8px">${I.left}Profile</button>
-  <div class="page-head"><h2>My foods</h2><div class="row">${ui.scan ? `<button class="small" data-act="scanIng">${I.camera}Scan</button>` : ""}<button class="small primary" data-act="editIng">${I.plus}New</button></div></div>
+  <div class="page-head"><h2>My foods</h2><div class="row">${ui.scan ? `<button class="small" data-act="scanIng" aria-label="Scan a package label">${I.camera}Scan</button>` : ""}<button class="small primary" data-act="editIng">${I.plus}New</button></div></div>
   <p class="muted">Values per 100 g (or 100 ml). Foods you type into recipes land here; edit any of them to match the package label.</p>
   <div class="card">${list.length ? list.map(i => `<div class="item"><div class="grow"><div style="font-weight:600">${esc(i.name)}</div><div class="muted" style="margin-top:2px">${macroLine(i)}</div>${i.src || pieceOf(i) ? `<div class="muted" style="font-size:.76rem;margin-top:2px">${[pieceOf(i) && `1 ${pieceOf(i).one} = ${r(pieceOf(i).g)} g`, i.src && esc(i.src)].filter(Boolean).join(" · ")}</div>` : ""}</div>
     <button class="small" data-act="editIng" data-v="${i.id}">Edit</button><button class="x" data-act="delIng" data-v="${i.id}" aria-label="Delete ${esc(i.name)}">${I.trash}</button></div>`).join("") : `<p class="muted" style="margin:0">Nothing here yet.</p>`}</div>`;
@@ -918,7 +918,7 @@ function entryDialog(meal, preRecipe, preFood) {
   const favs = state.recipes.filter(x => x.fav);
   openDlg(`<h3>${meal === "Snack" ? "Log food" : `Add to ${meal}`}</h3>
   ${favs.length ? `<p class="eyebrow" style="margin-top:6px">Favourites</p><div class="chips" id="favs">${favs.map(x => `<button type="button" class="chip" data-fav="${x.id}">${I.star.replace("<svg", `<svg style="color:var(--c);width:15px;height:15px"`)}${esc(x.name)}</button>`).join("")}</div>` : ""}
-  ${ui.scan ? `<button type="button" id="scanBtn" style="width:100%;margin-top:12px">${I.camera}Scan a package label</button>` : ""}
+  ${ui.scan ? `<div class="row" style="margin-top:12px"><button type="button" id="scanBtn" class="grow">${I.camera}Scan a package label</button><button type="button" id="scanPick" class="small" style="min-height:44px">From photos</button></div>` : ""}
   <form id="f"><label>What are you adding?</label><select name="type"><option value="recipe">Recipe (servings)</option><option value="ingredient">Food (grams or pieces)</option><option value="quick">Quick add (manual)</option></select>
   <div id="fields"></div><label>Meal</label><select name="meal">${MEALS.map(m => `<option value="${m}" ${m === meal ? "selected" : ""}>${mealName(m)}</option>`).join("")}</select>
   <div class="foot"><button type="button" data-close>Cancel</button><button class="primary">Add</button></div></form>`, d => {
@@ -934,6 +934,7 @@ function entryDialog(meal, preRecipe, preFood) {
     if (preFood) f.type.value = "ingredient";
     f.type.onchange = draw; draw();
     d.querySelector("#scanBtn")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name)));
+    d.querySelector("#scanPick")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name), true));
     // When the typed food is counted in pieces, offer pieces as the unit.
     fields.addEventListener("change", e => {
       if (e.target.name !== "food") return;
@@ -966,10 +967,13 @@ function entryDialog(meal, preRecipe, preFood) {
 // ---------- scan a package label ----------
 const DEFAULT_SCAN = { maxCount: 1, maxInputBytes: 20e6, mediaTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"] };
 // Take or pick a photo of the nutrition table; Claude reads it and the "New food" sheet opens pre-filled to check.
-function scanLabel(afterSave) {
+function scanLabel(afterSave, fromGallery = false) {
   if (!ui.scan || !ui.ai) { notice("Scanning labels needs the app open in Claude (claude.ai or the Claude app)."); return; }
   const inp = document.createElement("input");
-  inp.type = "file"; inp.accept = (ui.scan.mediaTypes || ["image/jpeg", "image/png"]).join(",");
+  inp.type = "file";
+  // capture="environment" opens the phone's back camera straight away; the gallery option leaves it out.
+  if (fromGallery) inp.accept = (ui.scan.mediaTypes || ["image/jpeg", "image/png"]).join(",");
+  else { inp.accept = "image/*"; inp.setAttribute("capture", "environment"); }
   inp.onchange = async () => {
     const file = inp.files[0]; if (!file) return;
     if (file.size > (ui.scan.maxInputBytes || 20e6)) { notice("That photo is too large. Try again with a smaller one."); return; }
