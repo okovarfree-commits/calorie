@@ -119,10 +119,14 @@ let state = load();
 let ui = { tab: "today", date: today() };
 
 // Shopping: portions planned per recipe, ticked items, and extra free-text items.
+// Food preferences the assistant uses for meal ideas.
+function emptyPrefs() { return { likes: [], style: [], likeText: "", avoid: "" }; }
+const PREF_LIKES = ["Chicken", "Beef", "Pork", "Fish", "Eggs", "Pasta", "Rice", "Potatoes", "Wraps", "Oats", "Italian", "Mexican", "Asian", "Czech", "Spicy", "Sweet breakfasts"];
+const PREF_STYLE = ["Quick (under 20 min)", "Meal prep in big batches", "Cheap", "Few dishes to wash", "Lots of protein"];
 function emptyShop() { return { plan: {}, checked: {}, extra: [] }; }
 function load() {
-  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop() };
-  try { return Object.assign(def, JSON.parse(localStorage.getItem(KEY)) || {}); } catch { return def; }
+  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop(), prefs: emptyPrefs() };
+  try { const st = Object.assign(def, JSON.parse(localStorage.getItem(KEY)) || {}); st.prefs = { ...emptyPrefs(), ...st.prefs }; return st; } catch { return def; }
 }
 
 // ---------- storage ----------
@@ -133,7 +137,7 @@ let db = null;
 const synced = {}, chains = {}, loadedDays = new Set();
 // Key-order-independent JSON, so a document read back from the store compares equal to what we wrote.
 const canon = v => Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",")}}` : JSON.stringify(v);
-const settingsBody = () => ({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes });
+const settingsBody = () => ({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes, prefs: state.prefs });
 function put(path, body) {
   const js = canon(body); if (synced[path] === js) return; synced[path] = js;
   syncStatus(1); busy[path] = (busy[path] || 0) + 1;
@@ -176,6 +180,7 @@ const busy = {};
 const chainBusy = path => busy[path] > 0;
 function applySettings(b) {
   state.goals = b.goals || state.goals; state.ingredients = structuredClone(b.ingredients || []); state.recipes = structuredClone(b.recipes || []);
+  state.prefs = { ...emptyPrefs(), ...structuredClone(b.prefs || {}) };
   synced["app/settings"] = canon(settingsBody());
 }
 async function connect() {
@@ -607,6 +612,14 @@ function viewGoals() {
   const nFoods = state.ingredients.length;
   return `<h2>Profile</h2>
   <button class="card navcard" data-act="tab" data-v="ingredients"><span><b>My foods</b><span class="muted" style="display:block">${nFoods ? `${nFoods} food${nFoods == 1 ? "" : "s"} with your nutrition values and piece sizes` : "Foods you use in recipes appear here"}</span></span><span aria-hidden="true">›</span></button>
+  <div class="card"><h3>Food preferences</h3><p class="muted" style="margin-top:0">The Assistant uses these when you ask for meal ideas.</p>
+    <div class="muted" style="margin-bottom:4px">I like</div>
+    <div class="chips">${PREF_LIKES.map(x => `<button type="button" class="small chip${state.prefs.likes.includes(x) ? " on" : ""}" data-act="prefChip" data-v="likes:${x}" aria-pressed="${state.prefs.likes.includes(x)}">${x}</button>`).join("")}</div>
+    <label for="prefLikeText">Anything else you like</label><input id="prefLikeText" value="${esc(state.prefs.likeText)}" placeholder="e.g. burritos, curry, cottage cheese">
+    <label for="prefAvoid">Don't like / avoid</label><input id="prefAvoid" value="${esc(state.prefs.avoid)}" placeholder="e.g. mushrooms, olives, fish">
+    <div class="muted" style="margin:10px 0 4px">How I cook</div>
+    <div class="chips">${PREF_STYLE.map(x => `<button type="button" class="small chip${state.prefs.style.includes(x) ? " on" : ""}" data-act="prefChip" data-v="style:${x}" aria-pressed="${state.prefs.style.includes(x)}">${x}</button>`).join("")}</div>
+  </div>
   <form class="card" data-form="goals"><h3>Daily goals</h3>
     <label for="gmode">What counts as hitting your goal</label><select id="gmode" name="mode">${Object.entries(GOAL_MODES).map(([k, v]) => `<option value="${k}" ${(g.mode || "min") === k ? "selected" : ""}>${v}</option>`).join("")}</select>
     <label>Daily calories (kcal)</label><input name="kcal" inputmode="decimal" value="${g.kcal}">
@@ -858,6 +871,7 @@ How to behave:
 - If they ate one of their saved recipes (listed below), log it instead of making a new one; ask how many servings if unclear.
 - If they just ate simple foods ("a banana and a coffee with milk"), log them directly with estimated grams.
 - If they reply with corrections after a proposal, send an updated full proposal.
+- If they ask for ideas, what to cook or what to eat (e.g. "ideas for dinner", "what should I meal prep", "what can I eat to hit my protein"), reply with an "ideas" proposal of 3 or 4 different dishes. Use their likes and cooking style, never use anything they avoid, and fit their goal (for a calorie or protein target, make the portions big enough; if they ask about the rest of today, aim at what is left). Each idea is a full recipe for the whole batch with realistic home-cooking amounts, a one-line "why" (how it fits them) and a rough "time". Vary them (different proteins/cuisines).
 - For every item give typical nutrition per 100 g from standard food tables.
 - Keep "say" short, friendly and plain text (with a recipe proposal, one sentence such as "Tick what you used and fix the amounts."). Reply in the language the user writes in.
 
@@ -866,7 +880,8 @@ Reply with ONLY one JSON object of this shape:
  "proposal": null
    OR {"kind": "recipe", "name": "Chilli con carne", "servings": 4, "items": [{"name": "Beef mince", "grams": 500, "typical": true, "per100": {"kcal": 254, "p": 17.2, "c": 0, "f": 20}}, {"name": "Onion", "pieces": 2, "grams": 220, "typical": true, "per100": {"kcal": 40, "p": 1.1, "c": 9.3, "f": 0.1}}, {"name": "Sweetcorn", "grams": 150, "typical": false, "per100": {"kcal": 86, "p": 3.3, "c": 19, "f": 1.2}}], "log": {"servings": 1, "meal": "Dinner"} or null}
    OR {"kind": "log", "items": [{"name": "Banana", "grams": 120, "meal": "Snack", "per100": {"kcal": 89, "p": 1.1, "c": 22.8, "f": 0.3}}]}
-   OR {"kind": "log_recipe", "recipe": "exact saved recipe name", "servings": 1, "meal": "Breakfast"}}
+   OR {"kind": "log_recipe", "recipe": "exact saved recipe name", "servings": 1, "meal": "Breakfast"}
+   OR {"kind": "ideas", "ideas": [{"name": "Chicken burrito bowls", "why": "Mexican, 50 g protein a portion, preps in one batch", "time": "30 min", "servings": 4, "items": [same item shape as a recipe, all "typical": true]}]}}
 "meal" is one of Breakfast, Lunch, Dinner, Snack ("Snack" means anything outside the three meals). "log" inside a recipe proposal is set only if they said they ate some of it (or ate it just now).`;
 
 function aiContext() {
@@ -874,7 +889,12 @@ function aiContext() {
   return `Context from the app (not from the user):
 - Current time: ${new Date().toTimeString().slice(0, 5)} (so a meal eaten "just now" is probably ${h < 11 ? "Breakfast" : h < 16 ? "Lunch" : h < 22 ? "Dinner" : "Snack"}).
 - Saved recipes: ${state.recipes.map(x => `${x.name} (${x.servings} servings)`).join("; ") || "none"}.
-- Saved ingredients: ${state.ingredients.map(i => i.name).join(", ") || "none"}.`;
+- Saved ingredients: ${state.ingredients.map(i => i.name).join(", ") || "none"}.
+- Daily goal: ${r(state.goals.kcal)} kcal (${{ min: "trying to reach at least this, building muscle", max: "trying to stay under this, losing weight", range: "maintaining" }[state.goals.mode || "min"]}), protein ${r(state.goals.p)} g, carbs ${r(state.goals.c)} g, fat ${r(state.goals.f)} g.
+- Eaten so far on ${ui.date === today() ? "today" : ui.date}: ${(t => `${r(t.kcal)} kcal, protein ${r(t.p)} g, carbs ${r(t.c)} g, fat ${r(t.f)} g`)(dayTotal(ui.date))}.
+- Likes: ${[...state.prefs.likes, state.prefs.likeText].filter(Boolean).join(", ") || "not set"}.
+- Avoid: ${state.prefs.avoid || "nothing listed"}.
+- Cooking style: ${state.prefs.style.join(", ") || "not set"}.`;
 }
 
 async function aiSend(text) {
@@ -922,6 +942,10 @@ function aiProposal(p) {
       logOn: !!p.log, logServings: num(p.log?.servings) || 1, meal: p.log ? meal(p.log.meal) : h < 11 ? "Breakfast" : h < 16 ? "Lunch" : h < 22 ? "Dinner" : "Snack" };
   }
   if (p.kind === "log") { const items = (p.items || []).map(item).filter(Boolean); return items.length ? { kind: "log", items } : null; }
+  if (p.kind === "ideas") {
+    const ideas = (p.ideas || []).slice(0, 5).map(x => ({ name: String(x?.name || "").trim(), why: String(x?.why || ""), time: String(x?.time || ""), servings: num(x?.servings) || 1, items: (x?.items || []).map(item).filter(Boolean) })).filter(x => x.name && x.items.length);
+    return ideas.length ? { kind: "ideas", ideas } : null;
+  }
   if (p.kind === "log_recipe") {
     const rc = state.recipes.find(x => norm(x.name).join(" ") === norm(p.recipe || "").join(" "));
     return rc ? { kind: "log_recipe", recipeId: rc.id, servings: num(p.servings) || 1, meal: meal(p.meal) } : null;
@@ -982,6 +1006,15 @@ function proposalCard(p, k) {
       <div data-tot="${k}"></div>
       <div class="row wrap" style="margin-top:10px"><button class="small primary" data-act="aiApply" data-v="${k}:save" data-savebtn="${k}">Save recipe</button><button class="small" data-act="aiApply" data-v="${k}:edit">Open in recipe editor</button></div></div>`;
   }
+  if (p.kind === "ideas") return p.ideas.map((x, i) => {
+    const per = add(ZERO(), x.items.reduce((a, it) => add(a, it.n, it.grams / 100), ZERO()), 1 / x.servings), cs = CATS.filter(c => c[3](per));
+    return `<div class="card prop idea"><div class="row between"><b>${esc(x.name)}</b>${x.time ? `<span class="muted">${esc(x.time)}</span>` : ""}</div>
+      ${cs.length ? `<div class="tags">${cs.map(c => `<span class="tag tag-${c[0]}">${c[1]}</span>`).join("")}</div>` : ""}
+      ${x.why ? `<p style="margin:4px 0">${esc(x.why)}</p>` : ""}
+      <div class="muted">${x.items.map(it => esc(it.name.toLowerCase())).join(", ")}</div>
+      <div style="margin-top:6px"><span class="muted">Per portion (makes ${r(x.servings, 2)}):</span> <b>${macroLine(per)}</b></div>
+      ${x.used ? `<p class="ok">Opened below.</p>` : `<button class="small primary" style="margin-top:8px" data-act="aiApply" data-v="${k}:idea:${i}">Cook this</button>`}</div>`;
+  }).join("");
   if (p.kind === "log") {
     const t = p.items.reduce((a, x) => add(a, x.n, x.grams / 100), ZERO());
     return `<div class="card prop">${p.items.map(x => `<div class="item"><div><div>${esc(x.name)} <span class="muted">${x.pc ? countLabel(x.qty, x.pc) : `${r(x.grams)} g`} · ${mealName(x.meal)}</span></div><div class="muted">${esc(x.n.src)}</div></div><span class="muted">${r(x.n.kcal * x.grams / 100)} kcal</span></div>`).join("")}
@@ -994,7 +1027,13 @@ function proposalCard(p, k) {
 }
 
 function aiApply(v) {
-  const [k, how] = v.split(":"), p = ui.chat[k].proposal;
+  const [k, how, idx] = v.split(":"), p = ui.chat[k].proposal;
+  if (how === "idea") {
+    const x = p.ideas[idx], h = new Date().getHours(); x.used = true;
+    const proposal = { kind: "recipe", name: x.name, servings: x.servings, items: x.items.map(it => ({ ...it, on: true, opt: false })), logOn: false, logServings: 1, meal: h < 11 ? "Breakfast" : h < 16 ? "Lunch" : h < 22 ? "Dinner" : "Snack" };
+    ui.chat.push({ role: "assistant", text: `${x.name}: tick what you'll use, change amounts and portions, then save it as a recipe. You can then plan it on the Shop tab.`, raw: JSON.stringify({ say: `Chose idea: ${x.name}`, proposal: { kind: "recipe", name: x.name, servings: x.servings } }), proposal });
+    return;
+  }
   const day = ui.date === today() ? "today" : ui.date;
   if (p.kind === "recipe") {
     const used = p.items.filter(x => x.on && pickGrams(x) > 0);
@@ -1021,10 +1060,10 @@ function aiApply(v) {
 
 function viewChat() {
   if (ui.ai === null) return `<h2>Assistant</h2><div class="card"><p>The assistant uses Claude, so it only works when you open this app in Claude (claude.ai or the Claude app).</p></div>`;
-  const examples = ["I made chilli con carne", "I ate 2 slices of pizza and a coke", "I had my oats breakfast"];
+  const examples = ["I made chilli con carne", "Give me dinner ideas", "High protein meal prep ideas", "What can I eat to hit my goal today?", "I had my oats breakfast"];
   return `<div class="row between"><h2>Assistant</h2>${ui.chat.length ? `<button class="small" data-act="aiReset">New chat</button>` : ""}</div>
   <div id="chatLog" class="chat">
-    ${ui.chat.length ? "" : `<div class="card"><p style="margin-top:0">Tell me what you ate or cooked. I'll ask what went in and how many portions it made, then work out the calories and macros for you to save with one tap.</p><div class="chips">${examples.map(x => `<button class="small" data-act="aiExample" data-v="${esc(x)}">${esc(x)}</button>`).join("")}</div></div>`}
+    ${ui.chat.length ? "" : `<div class="card"><p style="margin-top:0">Tell me what you ate or cooked and I'll turn it into a tick-box list to save. Or ask me for meal ideas: I'll use the food preferences in your profile.</p><div class="chips">${examples.map(x => `<button class="small" data-act="aiExample" data-v="${esc(x)}">${esc(x)}</button>`).join("")}</div></div>`}
     ${ui.chat.map((m, k) => `<div class="msg ${m.role}">${esc(m.text)}</div>${m.proposal ? proposalCard(m.proposal, k) : ""}`).join("")}
     ${ui.chatBusy ? `<div class="msg assistant muted">Thinking…</div>` : ""}
   </div>
@@ -1043,6 +1082,7 @@ const actions = {
   aiAddItem: v => aiAddItem(v),
   aiReset: () => { ui.chat = []; ui.chatErr = ""; },
   recCat: v => { ui.recCat = v; },
+  prefChip: v => { const [k, x] = [v.slice(0, v.indexOf(":")), v.slice(v.indexOf(":") + 1)], a = state.prefs[k]; const i = a.indexOf(x); if (i >= 0) a.splice(i, 1); else a.push(x); save(); },
   shopAdd: v => { const rc = state.recipes.find(x => x.id === v); if (!rc) return; state.shop.plan[v] = rc.servings || 1; ui.shopQ = ""; save(); },
   shopStep: v => { const [id, d] = v.split(":"), n = Math.max(0, (state.shop.plan[id] || 0) + +d); if (n) state.shop.plan[id] = n; else delete state.shop.plan[id]; save(); },
   shopTick: v => { if (state.shop.checked[v]) delete state.shop.checked[v]; else state.shop.checked[v] = true; save(); },
@@ -1105,6 +1145,7 @@ function pickField(el) {
   refreshPick(k);
 }
 document.addEventListener("change", e => {
+  if (e.target.id === "prefLikeText" || e.target.id === "prefAvoid") { state.prefs[e.target.id === "prefAvoid" ? "avoid" : "likeText"] = e.target.value.trim(); save(); return; }
   if (e.target.dataset.pk != null) { pickField(e.target); return; }
   if (e.target.type === "checkbox" && e.target.dataset.act) { actions[e.target.dataset.act](e.target.dataset.v); render(); return; }
   if (e.target.dataset.shop) { const n = num(e.target.value); if (n) state.shop.plan[e.target.dataset.shop] = n; else delete state.shop.plan[e.target.dataset.shop]; save(); render(); return; }
