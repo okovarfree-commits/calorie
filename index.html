@@ -168,7 +168,7 @@ const ZERO = () => ({ kcal: 0, p: 0, c: 0, f: 0 });
 const add = (a, b, k = 1) => ({ kcal: a.kcal + b.kcal * k, p: a.p + b.p * k, c: a.c + b.c * k, f: a.f + b.f * k });
 const ing = id => state.ingredients.find(i => i.id === id);
 function recipeTotal(rec) {
-  return rec.items.reduce((t, it) => { const i = ing(it.ingId); return i ? add(t, i, it.grams / 100) : t; }, ZERO());
+  return rec.items.reduce((t, it) => { const i = ing(it.ingId); return i ? add(t, i, itemGrams(it) / 100) : t; }, ZERO());
 }
 function perServing(rec) { const t = recipeTotal(rec), s = rec.servings || 1; return add(ZERO(), t, 1 / s); }
 const dayEntries = d => state.log[d] || [];
@@ -308,7 +308,35 @@ const FOODS = [
 ];
 const norm = s => String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9% ]/g, " ").trim().split(/\s+/).filter(Boolean)
   .map(w => w.length > 4 ? w.replace(/(oes|es|s)$/, m => m === "oes" ? "o" : "") : w);
-const FOOD_INDEX = FOODS.map(([name, kcal, p, c, f, al]) => ({ name, kcal, p, c, f, keys: [name, ...al.split(",").filter(Boolean)].map(norm) }));
+// Foods usually counted rather than weighed: [grams per piece, singular, plural].
+const PIECES = {
+  "Onion": [110, "onion", "onions"], "Garlic": [5, "clove", "cloves"], "Egg": [50, "egg", "eggs"], "Egg white": [33, "egg white", "egg whites"],
+  "Banana": [120, "banana", "bananas"], "Apple": [180, "apple", "apples"], "Orange": [150, "orange", "oranges"], "Pear": [170, "pear", "pears"],
+  "Tomato": [120, "tomato", "tomatoes"], "Carrot": [60, "carrot", "carrots"], "Bell pepper": [150, "pepper", "peppers"], "Chili pepper": [15, "chili", "chilies"],
+  "Potatoes": [170, "potato", "potatoes"], "Sweet potato": [200, "sweet potato", "sweet potatoes"], "Avocado": [150, "avocado", "avocados"],
+  "Cucumber": [300, "cucumber", "cucumbers"], "Zucchini": [200, "zucchini", "zucchinis"], "Lemon juice": [30, "lemon", "lemons"],
+  "White bread": [30, "slice", "slices"], "Wholemeal bread": [35, "slice", "slices"], "Rye bread": [35, "slice", "slices"], "Tortilla wrap": [60, "wrap", "wraps"],
+  "Kidney beans (canned, drained)": [240, "can", "cans"], "Black beans (canned, drained)": [240, "can", "cans"], "Chickpeas (canned, drained)": [240, "can", "cans"],
+  "Chopped tomatoes (canned)": [400, "can", "cans"], "Coconut milk (canned)": [400, "can", "cans"], "Tuna (canned in water)": [110, "can", "cans"],
+  "Stock cube": [10, "cube", "cubes"], "Sausage": [75, "sausage", "sausages"], "Mozzarella": [125, "ball", "balls"], "Whey protein": [30, "scoop", "scoops"],
+};
+const FOOD_INDEX = FOODS.map(([name, kcal, p, c, f, al]) => {
+  const pc = PIECES[name];
+  return { name, kcal, p, c, f, ...(pc && { pieceG: pc[0], piece: pc[1], pieces: pc[2] }), keys: [name, ...al.split(",").filter(Boolean)].map(norm) };
+});
+// Piece size for an ingredient: its own setting, else the built-in one for the same food name.
+function pieceOf(i) {
+  if (!i) return null;
+  if (i.pieceG > 0) return { g: i.pieceG, one: i.piece || "piece", many: i.pieces || (i.piece ? i.piece + "s" : "pieces") };
+  const k = norm(i.name).join(" "), b = FOOD_INDEX.find(x => x.pieceG && x.keys.some(key => key.join(" ") === k));
+  return b ? { g: b.pieceG, one: b.piece, many: b.pieces } : null;
+}
+const countLabel = (qty, pc) => `${r(qty, 2)} ${qty == 1 ? pc.one : pc.many}`;
+// Grams of one recipe item (items counted in pieces follow the ingredient's current piece size).
+function itemGrams(it) {
+  if (it.unit === "pc") { const pc = pieceOf(ing(it.ingId)); if (pc) return it.qty * pc.g; }
+  return it.grams;
+}
 
 // Best built-in match for what the user typed, or null.
 function findFood(query) {
@@ -359,7 +387,7 @@ const ingByName = name => { const k = norm(name).join(" "); return state.ingredi
 // Nutrition for a typed name: your saved ingredient, else built-in table, else online average.
 async function resolveFood(name, skipOwn = false) {
   const own = !skipOwn && ingByName(name); if (own) return { ...own, src: own.src || "your ingredient" };
-  const b = findFood(name), fromTable = b && { name: b.name, kcal: b.kcal, p: b.p, c: b.c, f: b.f, src: `typical values for ${b.name}` };
+  const b = findFood(name), fromTable = b && { name: b.name, kcal: b.kcal, p: b.p, c: b.c, f: b.f, pieceG: b.pieceG, piece: b.piece, pieces: b.pieces, src: `typical values for ${b.name}` };
   if (b?.strong) return fromTable;
   // Only a loose match (e.g. "almond milk" ~ "milk"): prefer the online average, fall back to the table.
   const o = await lookupOnline(name); if (o) return { name: name.trim(), ...o };
@@ -367,7 +395,7 @@ async function resolveFood(name, skipOwn = false) {
 }
 function ensureIngredient(name, n) {
   const own = ingByName(name) || ingByName(n.name); if (own) return own.id;
-  const i = { id: uid(), name: n.name || name.trim(), kcal: n.kcal, p: n.p, c: n.c, f: n.f, src: n.src };
+  const i = { id: uid(), name: n.name || name.trim(), kcal: n.kcal, p: n.p, c: n.c, f: n.f, src: n.src, ...(n.pieceG > 0 && { pieceG: n.pieceG, piece: n.piece, pieces: n.pieces }) };
   state.ingredients.push(i); return i.id;
 }
 const foodDatalist = () => `<datalist id="foods">${[...new Set([...state.ingredients.map(i => i.name), ...FOODS.map(x => x[0])])].map(n => `<option value="${esc(n)}">`).join("")}</datalist>`;
@@ -434,7 +462,7 @@ function viewIngredients() {
   const list = [...state.ingredients].sort((a, b) => a.name.localeCompare(b.name));
   return `<div class="row between"><h2>Ingredients</h2><button class="primary" data-act="editIng">+ New</button></div>
   <p class="muted">Values are per 100 g (or 100 ml). Ingredients you type into recipes are added here automatically — edit any of them to match your package label.</p>
-  <div class="card">${list.length ? list.map(i => `<div class="item"><div><div>${esc(i.name)}</div><div class="muted">per 100g: ${macroLine(i)}</div>${i.src ? `<div class="muted">${esc(i.src)}</div>` : ""}</div>
+  <div class="card">${list.length ? list.map(i => `<div class="item"><div><div>${esc(i.name)}</div><div class="muted">per 100g: ${macroLine(i)}</div>${i.src || pieceOf(i) ? `<div class="muted">${[pieceOf(i) && `1 ${pieceOf(i).one} = ${r(pieceOf(i).g)} g`, i.src && esc(i.src)].filter(Boolean).join(" · ")}</div>` : ""}</div>
     <div class="row"><button class="small" data-act="editIng" data-v="${i.id}">Edit</button><button class="small danger" data-act="delIng" data-v="${i.id}">✕</button></div></div>`).join("") : `<span class="muted">Nothing here yet.</span>`}</div>`;
 }
 
@@ -455,7 +483,7 @@ function entryDialog(meal, preRecipe) {
   const favs = state.recipes.filter(x => x.fav);
   openDlg(`<h3>${meal === "Snack" ? "Log food" : `Add to ${meal}`}</h3>
   ${favs.length ? `<div class="muted">Favorites</div><div class="chips" id="favs">${favs.map(x => `<button class="small" data-fav="${x.id}">${esc(x.name)}</button>`).join("")}</div>` : ""}
-  <form id="f"><label>Type</label><select name="type"><option value="recipe">Recipe (servings)</option><option value="ingredient">Ingredient (grams)</option><option value="quick">Quick add (manual)</option></select>
+  <form id="f"><label>Type</label><select name="type"><option value="recipe">Recipe (servings)</option><option value="ingredient">Food (grams or pieces)</option><option value="quick">Quick add (manual)</option></select>
   <div id="fields"></div><label>Meal</label><select name="meal">${MEALS.map(m => `<option value="${m}" ${m === meal ? "selected" : ""}>${mealName(m)}</option>`).join("")}</select>
   <div class="row" style="margin-top:12px"><button type="button" class="grow" data-close>Cancel</button><button class="primary grow">Add</button></div></form>`, d => {
     const f = d.querySelector("#f"), fields = d.querySelector("#fields");
@@ -463,11 +491,19 @@ function entryDialog(meal, preRecipe) {
     const draw = () => {
       const t = f.type.value;
       fields.innerHTML = t === "recipe" ? (state.recipes.length ? `<label>Recipe</label><select name="ref">${opts(state.recipes)}</select><label>Servings eaten</label><input name="amt" inputmode="decimal" value="1">` : `<p class="muted">No recipes yet.</p>`)
-        : t === "ingredient" ? `${foodDatalist()}<label>Food</label><input list="foods" name="food" placeholder="e.g. banana"><label>Grams</label><input name="amt" inputmode="decimal" value="100"><p class="muted" id="fst"></p>`
+        : t === "ingredient" ? `${foodDatalist()}<label>Food</label><input list="foods" name="food" placeholder="e.g. banana"><label>Amount</label><div class="row"><input name="amt" inputmode="decimal" value="100" class="grow"><span id="unit" class="muted">g</span></div><p class="muted" id="fst"></p>`
         : `<label>Name</label><input name="name" value="Quick add"><div class="grid"><div><label>kcal</label><input name="kcal" inputmode="decimal"></div><div><label>Protein</label><input name="p" inputmode="decimal"></div><div><label>Carbs</label><input name="c" inputmode="decimal"></div></div><label>Fat</label><input name="f" inputmode="decimal">`;
       if (preRecipe && t === "recipe" && f.ref) f.ref.value = preRecipe;
     };
     f.type.onchange = draw; draw();
+    // When the typed food is counted in pieces, offer pieces as the unit.
+    fields.addEventListener("change", e => {
+      if (e.target.name !== "food") return;
+      const own = ingByName(e.target.value), b = findFood(e.target.value), pc = pieceOf(own || (b?.strong && b)), u = d.querySelector("#unit");
+      if (!u) return;
+      u.innerHTML = pc ? `<select name="unit" aria-label="Unit"><option value="pc">${esc(pc.many)}</option><option value="g">g</option></select>` : "g";
+      if (pc && num(f.amt.value) === 100) f.amt.value = 1;
+    });
     d.querySelectorAll("[data-fav]").forEach(b => b.onclick = () => { f.type.value = "recipe"; draw(); f.ref.value = b.dataset.fav; f.amt.focus(); });
     f.onsubmit = async e => {
       e.preventDefault();
@@ -478,7 +514,8 @@ function entryDialog(meal, preRecipe) {
         st.textContent = "Looking up…";
         const n = await resolveFood(q);
         if (!n) { st.textContent = "Couldn't find that — try another name or use Quick add."; return; }
-        const i = ing(ensureIngredient(q, n)), g = num(f.amt.value); e2 = { name: i.name, amount: `${r(g)} g`, ...add(ZERO(), i, g / 100) };
+        const i = ing(ensureIngredient(q, n)), pc = f.unit?.value === "pc" && pieceOf(i), a = num(f.amt.value), g = pc ? a * pc.g : a;
+        e2 = { name: i.name, amount: pc ? `${countLabel(a, pc)} (${r(g)} g)` : `${r(g)} g`, ...add(ZERO(), i, g / 100) };
       }
       else e2 = { name: f.name.value.trim() || "Quick add", amount: "", kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value) };
       pushEntry(f.meal.value, e2);
@@ -499,6 +536,8 @@ function ingDialog(id) {
   <p class="muted" id="src">Per 100 g${i.src ? ` · ${esc(i.src)}` : " · type a name and the values fill in automatically"}</p><div class="grid"><div><label>kcal</label><input name="kcal" inputmode="decimal" value="${i.kcal}"></div>
   <div><label>Protein</label><input name="p" inputmode="decimal" value="${i.p}"></div><div><label>Carbs</label><input name="c" inputmode="decimal" value="${i.c}"></div></div>
   <label>Fat</label><input name="f" inputmode="decimal" value="${i.f}">
+  <p class="muted" style="margin:14px 0 0">Counted in pieces? (optional, e.g. 1 clove = 5 g)</p>
+  <div class="row"><div class="grow"><label>1 piece weighs (g)</label><input name="pieceG" inputmode="decimal" value="${pieceOf(i)?.g ?? ""}"></div><div class="grow"><label>Piece is called</label><input name="piece" value="${esc(pieceOf(i)?.one ?? "")}" placeholder="e.g. clove"></div></div>
   <div class="row" style="margin-top:12px"><button type="button" class="grow" data-close>Cancel</button><button class="primary grow">Save</button></div></form>`, d => {
     const f = d.querySelector("#f"), src = d.querySelector("#src");
     let found = i.src || "";
@@ -508,13 +547,16 @@ function ingDialog(id) {
       const got = await resolveFood(q, true);
       if (!got) { src.textContent = "Per 100 g · not found, enter the values yourself"; return; }
       ["kcal", "p", "c", "f"].forEach(k => f[k].value = got[k]);
+      if (got.pieceG && !f.pieceG.value) { f.pieceG.value = got.pieceG; f.piece.value = got.piece; }
       found = got.src; src.textContent = `Per 100 g · ${got.src} (edit if your package says otherwise)`;
     };
     d.querySelector("#look").onclick = look;
     f.name.addEventListener("change", () => { if (!f.kcal.value) look(); });
     f.onsubmit = e => {
       e.preventDefault();
-      const v = { name: f.name.value.trim(), kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value), src: found || "entered manually" };
+      const pg = num(f.pieceG.value), one = f.piece.value.trim() || "piece";
+      const v = { name: f.name.value.trim(), kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value), src: found || "entered manually",
+        pieceG: pg || 0, piece: pg ? one : "", pieces: pg ? (/(s|x|ch|sh)$/.test(one) ? one + "es" : /o$/.test(one) ? one + "es" : one + "s") : "" };
       if (id) Object.assign(i, v); else state.ingredients.push({ id: uid(), ...v });
       save(); closeDlg(); render();
     };
@@ -524,27 +566,38 @@ function ingDialog(id) {
 function recipeDialog(id, draft, onSaved) {
   const orig = id && state.recipes.find(x => x.id === id);
   const rc = orig ? structuredClone(orig) : { id: uid(), name: draft?.name || "", servings: draft?.servings || 1, fav: false, items: [] };
-  // Each row: typed name, grams, resolved nutrition per 100 g (n) and a status line.
+  // Each row: typed name, amount, unit ("g" or "pc" for foods counted in pieces), nutrition per 100 g (n) and a status line.
+  const blank = () => ({ name: "", amt: "", unit: "g", n: null, status: "" });
   const rows = draft ? draft.rows.map(x => ({ ...x }))
-    : rc.items.map(it => { const i = ing(it.ingId); return { name: i ? i.name : "", grams: it.grams, n: i || null, status: i ? (i.src || "your ingredient") : "" }; });
-  if (!rows.length) rows.push({ name: "", grams: "", n: null, status: "" }, { name: "", grams: "", n: null, status: "" });
+    : rc.items.map(it => { const i = ing(it.ingId), pc = it.unit === "pc" && pieceOf(i); return { name: i ? i.name : "", amt: pc ? it.qty : it.grams, unit: pc ? "pc" : "g", n: i || null, status: i ? (i.src || "your ingredient") : "" }; });
+  if (!rows.length) rows.push(blank(), blank());
+  const rowPiece = x => x.unit === "pc" ? pieceOf(x.n) : null;
+  const rowGrams = x => { const pc = rowPiece(x); return pc ? num(x.amt) * pc.g : num(x.amt); };
   openDlg(`<h3>${id ? "Edit" : "New"} recipe</h3><form id="f">${foodDatalist()}<label>Name</label><input name="name" value="${esc(rc.name)}" placeholder="e.g. Chili con carne" required>
   <label>Servings the batch makes</label><input name="servings" inputmode="decimal" value="${rc.servings}">
-  <label>Ingredients — just type the name and grams for the whole batch</label><div id="items"></div>
+  <label>Ingredients for the whole batch: name, then grams or number of pieces</label><div id="items"></div>
   <button type="button" class="small" id="addRow" style="margin-top:6px">+ Ingredient</button>
   <div class="card" style="margin-top:12px" id="sum"></div>
   <p class="muted" id="err" style="color:var(--danger)"></p>
   <div class="row"><button type="button" class="grow" data-close>Cancel</button><button class="primary grow">Save</button></div></form>`, d => {
     const f = d.querySelector("#f"), box = d.querySelector("#items");
-    const total = () => rows.reduce((t, x) => x.n ? add(t, x.n, num(x.grams) / 100) : t, ZERO());
+    const total = () => rows.reduce((t, x) => x.n ? add(t, x.n, rowGrams(x) / 100) : t, ZERO());
     const sum = () => {
       const t = total(), sv = num(f.servings.value) || 1;
       d.querySelector("#sum").innerHTML = `<div class="muted">Whole batch</div>${macroLine(t)}<div class="muted" style="margin-top:6px">Per serving (1 of ${r(sv, 2)})</div><b>${macroLine(add(ZERO(), t, 1 / sv))}</b>`;
     };
-    const statusHtml = x => x.status ? `<div class="muted" style="margin:-2px 0 8px">${x.n ? `${esc(x.status)} · ${r(x.n.kcal)} kcal, P ${r(x.n.p, 1)} C ${r(x.n.c, 1)} F ${r(x.n.f, 1)} per 100 g` : esc(x.status)}</div>` : "";
+    const statusHtml = x => {
+      if (!x.status) return "";
+      const pc = rowPiece(x), amt = num(x.amt);
+      const qty = pc && amt ? `${countLabel(amt, pc)} = ${r(amt * pc.g)} g · ` : "";
+      return `<div class="muted" style="margin:-2px 0 8px">${x.n ? `${qty}${esc(x.status)} · ${r(x.n.kcal)} kcal, P ${r(x.n.p, 1)} C ${r(x.n.c, 1)} F ${r(x.n.f, 1)} per 100 g` : esc(x.status)}</div>`;
+    };
+    // Unit picker: grams, or pieces when the food has a piece size (onion, clove of garlic, egg, slice, can…).
+    const unitHtml = (x, k) => { const pc = pieceOf(x.n); return pc ? `<select data-k="${k}" data-f="unit" aria-label="Unit" style="width:auto"><option value="g" ${x.unit === "g" ? "selected" : ""}>g</option><option value="pc" ${x.unit === "pc" ? "selected" : ""}>${esc(pc.many)}</option></select>` : `<span class="muted" style="width:1.2em">g</span>`; };
+    const refresh = k => { const x = rows[k], u = d.querySelector(`[data-u="${k}"]`), st = d.querySelector(`[data-st="${k}"]`); if (u) u.innerHTML = unitHtml(x, k); if (st) st.innerHTML = statusHtml(x); sum(); };
     const draw = () => {
-      box.innerHTML = rows.map((x, k) => `<div class="row" style="margin-bottom:4px"><input list="foods" data-k="${k}" data-f="name" value="${esc(x.name)}" placeholder="e.g. beef mince" class="grow">
-        <input data-k="${k}" data-f="grams" inputmode="decimal" value="${x.grams}" placeholder="g" style="width:72px"><button type="button" class="small danger" data-rm="${k}">✕</button></div><div data-st="${k}">${statusHtml(x)}</div>`).join("");
+      box.innerHTML = rows.map((x, k) => `<div class="row" style="margin-bottom:4px"><input list="foods" data-k="${k}" data-f="name" value="${esc(x.name)}" placeholder="e.g. onion" class="grow" style="min-width:0">
+        <input data-k="${k}" data-f="amt" inputmode="decimal" value="${x.amt}" placeholder="amount" style="width:68px"><span data-u="${k}" class="row">${unitHtml(x, k)}</span><button type="button" class="small danger" data-rm="${k}" aria-label="Remove">✕</button></div><div data-st="${k}">${statusHtml(x)}</div>`).join("");
       sum();
     };
     const lookup = k => (rows[k].pending = doLookup(k));
@@ -552,17 +605,19 @@ function recipeDialog(id, draft, onSaved) {
       const x = rows[k], name = x.name.trim();
       if (!name) { x.n = null; x.status = ""; }
       else {
-        x.status = "Looking up…"; x.n = null; d.querySelector(`[data-st="${k}"]`).innerHTML = statusHtml(x); sum();
+        x.status = "Looking up…"; x.n = null; refresh(k);
         const res = await resolveFood(name);
         if (rows[k] !== x || x.name.trim() !== name) return; // edited meanwhile
-        x.n = res; x.status = res ? res.src : "Not found — try another name, or add it on the Ingredients tab";
+        x.n = res; x.status = res ? res.src : "Not found — try another name, or add it on the Foods tab";
+        // Counted foods default to pieces, unless a gram amount is already typed.
+        const pc = pieceOf(res); x.unit = pc && (!num(x.amt) || num(x.amt) < 20) ? "pc" : "g";
       }
-      const st = d.querySelector(`[data-st="${k}"]`); if (st) st.innerHTML = statusHtml(x); sum();
+      refresh(k);
     };
-    box.addEventListener("input", e => { const k = e.target.dataset.k; if (k == null) return; rows[k][e.target.dataset.f] = e.target.value; if (e.target.dataset.f === "grams") sum(); });
-    box.addEventListener("change", e => { const k = e.target.dataset.k; if (k != null && e.target.dataset.f === "name") lookup(+k); });
+    box.addEventListener("input", e => { const k = e.target.dataset.k; if (k == null) return; rows[k][e.target.dataset.f] = e.target.value; if (e.target.dataset.f !== "name") refresh(+k); });
+    box.addEventListener("change", e => { const k = e.target.dataset.k; if (k == null) return; if (e.target.dataset.f === "name") lookup(+k); else { rows[k][e.target.dataset.f] = e.target.value; refresh(+k); } });
     box.onclick = e => { if (e.target.dataset.rm != null) { rows.splice(e.target.dataset.rm, 1); draw(); } };
-    d.querySelector("#addRow").onclick = () => { rows.push({ name: "", grams: "", n: null, status: "" }); draw(); box.querySelector(`[data-k="${rows.length - 1}"]`).focus(); };
+    d.querySelector("#addRow").onclick = () => { rows.push(blank()); draw(); box.querySelector(`[data-k="${rows.length - 1}"]`).focus(); };
     f.servings.oninput = sum;
     draw();
     f.onsubmit = async e => {
@@ -576,7 +631,8 @@ function recipeDialog(id, draft, onSaved) {
       if (missing.length) { err.textContent = `Couldn't find: ${missing.join(", ")}. Change the name or add it on the Ingredients tab.`; return; }
       if (!used.length) { err.textContent = "Add at least one ingredient."; return; }
       rc.name = f.name.value.trim(); rc.servings = num(f.servings.value) || 1;
-      rc.items = used.map(x => ({ ingId: ensureIngredient(x.name, x.n), grams: num(x.grams) }));
+      rc.items = used.map(x => { const ingId = ensureIngredient(x.name, x.n), pc = rowPiece(x);
+        return pc ? { ingId, grams: rowGrams(x), qty: num(x.amt), unit: "pc" } : { ingId, grams: num(x.amt) }; });
       const k = state.recipes.findIndex(x => x.id === rc.id);
       if (k >= 0) state.recipes[k] = rc; else state.recipes.push(rc);
       onSaved && onSaved(rc);
@@ -593,7 +649,8 @@ const AI_RULES = `You are the assistant inside a personal calorie and macro trac
 
 How to behave:
 - If they cooked something (e.g. "I made chilli con carne"), find out the ingredients with amounts and how many portions the batch made. Do not make them type everything: suggest a typical version with typical amounts for that dish and ask them to confirm or correct it, and ask how many portions it made. At most two questions per message.
-- Convert pieces, cans, spoons and cups to grams yourself (1 egg = 50 g, 1 slice of bread = 30 g, 1 medium onion = 110 g, 1 can of beans drained = 240 g, 1 can of chopped tomatoes = 400 g, 1 tbsp oil = 13 g, 1 tsp = 5 g) and say what you assumed.
+- Foods people count (onions, garlic cloves, eggs, bananas, slices of bread, cans, chilies, potatoes…) are tracked by number: give "pieces" (the count) AND "grams" (count × typical weight: 1 medium onion = 110 g, 1 garlic clove = 5 g, 1 egg = 50 g, 1 slice of bread = 30 g, 1 can of beans drained = 240 g, 1 can of chopped tomatoes = 400 g). Ask "how many onions / cloves of garlic?" rather than grams.
+- Convert spoons and cups to grams yourself (1 tbsp oil = 13 g, 1 tsp = 5 g) and say what you assumed.
 - Pasta, rice and grains: amounts are dry weight unless they say cooked. Meat: raw weight.
 - If they ate one of their saved recipes (listed below), log it instead of making a new one; ask how many servings if unclear.
 - If they just ate simple foods ("a banana and a coffee with milk"), log them directly with estimated grams.
@@ -604,7 +661,7 @@ How to behave:
 Reply with ONLY one JSON object of this shape:
 {"say": "text to show the user",
  "proposal": null
-   OR {"kind": "recipe", "name": "Chilli con carne", "servings": 4, "items": [{"name": "Beef mince", "grams": 500, "per100": {"kcal": 254, "p": 17.2, "c": 0, "f": 20}}], "log": {"servings": 1, "meal": "Dinner"} or null}
+   OR {"kind": "recipe", "name": "Chilli con carne", "servings": 4, "items": [{"name": "Beef mince", "grams": 500, "per100": {"kcal": 254, "p": 17.2, "c": 0, "f": 20}}, {"name": "Onion", "pieces": 2, "grams": 220, "per100": {"kcal": 40, "p": 1.1, "c": 9.3, "f": 0.1}}], "log": {"servings": 1, "meal": "Dinner"} or null}
    OR {"kind": "log", "items": [{"name": "Banana", "grams": 120, "meal": "Snack", "per100": {"kcal": 89, "p": 1.1, "c": 22.8, "f": 0.3}}]}
    OR {"kind": "log_recipe", "recipe": "exact saved recipe name", "servings": 1, "meal": "Breakfast"}}
 "meal" is one of Breakfast, Lunch, Dinner, Snack ("Snack" means anything outside the three meals). "log" inside a recipe proposal is set only if they said they ate some of it (or ate it just now).`;
@@ -646,9 +703,11 @@ function aiProposal(p) {
     const name = String(x?.name || "").trim(), grams = num(x?.grams); if (!name) return null;
     const own = ingByName(name), b = !own && findFood(name), c = x.per100 || {};
     const n = own ? { ...own, src: own.src || "your ingredient" }
-      : b?.strong ? { name: b.name, kcal: b.kcal, p: b.p, c: b.c, f: b.f, src: `typical values for ${b.name}` }
+      : b?.strong ? { name: b.name, kcal: b.kcal, p: b.p, c: b.c, f: b.f, pieceG: b.pieceG, piece: b.piece, pieces: b.pieces, src: `typical values for ${b.name}` }
       : { name, kcal: num(c.kcal), p: num(c.p), c: num(c.c), f: num(c.f), src: "estimated by Claude from typical values" };
-    return { name: own ? own.name : name, grams, n, meal: meal(x.meal) };
+    // Counted foods: keep the count and use the app's piece weight.
+    const qty = num(x.pieces), pc = qty && pieceOf(n);
+    return { name: own ? own.name : name, grams: pc ? qty * pc.g : grams, qty: pc ? qty : 0, pc, n, meal: meal(x.meal) };
   };
   if (p.kind === "recipe") {
     const items = (p.items || []).map(item).filter(Boolean); if (!items.length) return null;
@@ -667,14 +726,14 @@ function proposalCard(p, k) {
   if (p.kind === "recipe") {
     const t = p.items.reduce((a, x) => add(a, x.n, x.grams / 100), ZERO()), per = add(ZERO(), t, 1 / p.servings);
     return `<div class="card prop"><div class="row between"><b>${esc(p.name)}</b><span class="muted">${r(p.servings, 2)} servings</span></div>
-      ${p.items.map(x => `<div class="item"><div><div>${esc(x.name)} <span class="muted">${r(x.grams)} g</span></div><div class="muted">${esc(x.n.src)}</div></div><span class="muted">${r(x.n.kcal * x.grams / 100)} kcal</span></div>`).join("")}
+      ${p.items.map(x => `<div class="item"><div><div>${esc(x.name)} <span class="muted">${x.pc ? `${countLabel(x.qty, x.pc)} (${r(x.grams)} g)` : `${r(x.grams)} g`}</span></div><div class="muted">${esc(x.n.src)}</div></div><span class="muted">${r(x.n.kcal * x.grams / 100)} kcal</span></div>`).join("")}
       <div class="muted" style="margin-top:6px">Per serving</div><b>${macroLine(per)}</b><div class="muted">Whole batch: ${r(t.kcal)} kcal</div>
       ${done || `<div class="row wrap" style="margin-top:10px">${p.log ? `<button class="small primary" data-act="aiApply" data-v="${k}:log">Save &amp; log ${r(p.log.servings, 2)} to ${mealName(p.log.meal)}</button>` : ""}
         <button class="small${p.log ? "" : " primary"}" data-act="aiApply" data-v="${k}:save">Save recipe</button><button class="small" data-act="aiApply" data-v="${k}:edit">Edit first</button></div>`}</div>`;
   }
   if (p.kind === "log") {
     const t = p.items.reduce((a, x) => add(a, x.n, x.grams / 100), ZERO());
-    return `<div class="card prop">${p.items.map(x => `<div class="item"><div><div>${esc(x.name)} <span class="muted">${r(x.grams)} g · ${mealName(x.meal)}</span></div><div class="muted">${esc(x.n.src)}</div></div><span class="muted">${r(x.n.kcal * x.grams / 100)} kcal</span></div>`).join("")}
+    return `<div class="card prop">${p.items.map(x => `<div class="item"><div><div>${esc(x.name)} <span class="muted">${x.pc ? countLabel(x.qty, x.pc) : `${r(x.grams)} g`} · ${mealName(x.meal)}</span></div><div class="muted">${esc(x.n.src)}</div></div><span class="muted">${r(x.n.kcal * x.grams / 100)} kcal</span></div>`).join("")}
       <div style="margin-top:6px"><b>${macroLine(t)}</b></div>${done || `<button class="small primary" style="margin-top:10px" data-act="aiApply" data-v="${k}:log">Log it</button>`}</div>`;
   }
   const rc = state.recipes.find(x => x.id === p.recipeId);
@@ -692,13 +751,13 @@ function aiApply(v) {
       p.done = `Saved "${rc.name}"${how === "log" && p.log ? ` and logged ${r(p.log.servings, 2)} to ${mealName(p.log.meal)} (${day})` : ""}.`;
     };
     if (how === "edit") {
-      recipeDialog(null, { name: p.name, servings: p.servings, rows: p.items.map(x => ({ name: x.name, grams: x.grams, n: x.n, status: x.n.src })) }, rc => { p.done = `Saved "${rc.name}".`; });
+      recipeDialog(null, { name: p.name, servings: p.servings, rows: p.items.map(x => ({ name: x.name, amt: x.pc ? x.qty : x.grams, unit: x.pc ? "pc" : "g", n: x.n, status: x.n.src })) }, rc => { p.done = `Saved "${rc.name}".`; });
       return;
     }
-    const rc = { id: uid(), name: p.name, servings: p.servings, fav: false, items: p.items.map(x => ({ ingId: ensureIngredient(x.name, x.n), grams: x.grams })) };
+    const rc = { id: uid(), name: p.name, servings: p.servings, fav: false, items: p.items.map(x => ({ ingId: ensureIngredient(x.name, x.n), grams: x.grams, ...(x.pc && { qty: x.qty, unit: "pc" }) })) };
     state.recipes.push(rc); finish(rc);
   } else if (p.kind === "log") {
-    p.items.forEach(x => { const i = ing(ensureIngredient(x.name, x.n)); pushEntry(x.meal, { name: i.name, amount: `${r(x.grams)} g`, ...add(ZERO(), i, x.grams / 100) }); });
+    p.items.forEach(x => { const i = ing(ensureIngredient(x.name, x.n)); pushEntry(x.meal, { name: i.name, amount: x.pc ? `${countLabel(x.qty, x.pc)} (${r(x.grams)} g)` : `${r(x.grams)} g`, ...add(ZERO(), i, x.grams / 100) }); });
     p.done = `Logged ${p.items.length} item${p.items.length == 1 ? "" : "s"} (${day}).`;
   } else {
     const rc = state.recipes.find(x => x.id === p.recipeId); if (!rc) return;
