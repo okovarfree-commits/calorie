@@ -72,11 +72,15 @@ function load() {
 // Opened as a plain file it falls back to this browser's localStorage.
 let db = null;
 const synced = {}, chains = {}, loadedDays = new Set();
+// Key-order-independent JSON, so a document read back from the store compares equal to what we wrote.
+const canon = v => Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",")}}` : JSON.stringify(v);
+const settingsBody = () => ({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes });
 function put(path, body) {
-  const js = JSON.stringify(body); if (synced[path] === js) return; synced[path] = js;
-  syncStatus(1);
+  const js = canon(body); if (synced[path] === js) return; synced[path] = js;
+  syncStatus(1); busy[path] = (busy[path] || 0) + 1;
   chains[path] = (chains[path] || Promise.resolve()).then(() => db.doc(path).set(body))
-    .then(() => syncStatus(-1), e => { delete synced[path]; syncStatus(-1, e); });
+    .then(() => syncStatus(-1), e => { delete synced[path]; syncStatus(-1, e); })
+    .finally(() => busy[path]--);
 }
 let pending = 0, syncErr = "";
 function syncStatus(d, e) {
@@ -87,17 +91,32 @@ function syncStatus(d, e) {
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
   if (!db) return;
-  put("app/settings", { goals: state.goals, ingredients: state.ingredients, recipes: state.recipes });
+  put("app/settings", settingsBody());
   for (const d of loadedDays) if (state.log[d]) put("days/" + d, { entries: state.log[d] });
 }
-async function loadDay(d) {
-  if (!db || loadedDays.has(d)) return;
-  try {
-    const snap = await db.doc("days/" + d).get();
-    if (snap.exists) { const body = snap.data(); state.log[d] = structuredClone(body.entries || []); synced["days/" + d] = JSON.stringify({ entries: state.log[d] }); }
-    else delete state.log[d];
-    loadedDays.add(d);
-  } catch { syncErr = "Couldn't load this day. Check your connection and open it again."; }
+// Live subscriptions: changes made on another device (or by Claude) show up without reloading.
+let unsubDay = null;
+function watchDay(d) {
+  unsubDay && unsubDay();
+  return new Promise(resolve => {
+    unsubDay = db.doc("days/" + d).onSnapshot(snap => {
+      const path = "days/" + d, body = snap.exists ? snap.data() : null;
+      if (!snap.metadata.hasPendingWrites && !chainBusy(path)) {
+        const js = body ? canon(body) : null;
+        if (js !== synced[path] || !loadedDays.has(d)) {
+          if (body) { state.log[d] = structuredClone(body.entries || []); synced[path] = canon({ entries: state.log[d] }); } else if (!loadedDays.has(d)) delete state.log[d];
+          loadedDays.add(d); if (ui.date === d && !dlg.open && !ui.loading) render();
+        }
+      }
+      resolve();
+    }, () => { syncErr = "Lost the connection to your saved data. Reload the page."; syncStatus(0); resolve(); });
+  });
+}
+const busy = {};
+const chainBusy = path => busy[path] > 0;
+function applySettings(b) {
+  state.goals = b.goals || state.goals; state.ingredients = structuredClone(b.ingredients || []); state.recipes = structuredClone(b.recipes || []);
+  synced["app/settings"] = canon(settingsBody());
 }
 async function connect() {
   if (!window.claude?.use) return;
@@ -106,20 +125,21 @@ async function connect() {
   try {
     const snap = await handle.doc("app/settings").get();
     db = handle;
-    if (snap.exists) {
-      const b = structuredClone(snap.data());
-      state = { goals: b.goals || state.goals, ingredients: b.ingredients || [], recipes: b.recipes || [], log: {} };
-      synced["app/settings"] = JSON.stringify({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes });
-    } else {
+    if (snap.exists) { state.log = {}; applySettings(snap.data()); }
+    else {
       // First run in this account: carry over anything saved in this browser.
       Object.keys(state.log).forEach(d => loadedDays.add(d));
       save();
     }
-    await loadDay(ui.date);
+    handle.doc("app/settings").onSnapshot(sn => {
+      if (!sn.exists || sn.metadata.hasPendingWrites || chainBusy("app/settings") || canon(sn.data()) === synced["app/settings"]) return;
+      applySettings(sn.data()); if (!dlg.open && !ui.loading) render();
+    }, () => {});
+    await watchDay(ui.date);
   } catch { syncErr = "Couldn't load your saved data. Reload the page to try again."; }
   ui.loading = false; render();
 }
-async function goToDate(d) { ui.date = d; if (db && !loadedDays.has(d)) { ui.loading = true; render(); await loadDay(d); ui.loading = false; } render(); }
+async function goToDate(d) { ui.date = d; if (db) { ui.loading = !loadedDays.has(d); render(); await watchDay(d); ui.loading = false; } render(); }
 
 // In-page confirmation (the claude.ai viewer ignores window.confirm).
 function ask(msg, okLabel = "Delete") {
@@ -565,7 +585,7 @@ const actions = {
   delRecipe: async v => { if (await ask("Delete this recipe? Days you already logged keep their numbers.")) { state.recipes = state.recipes.filter(x => x.id !== v); save(); render(); } },
   export: async () => {
     // Backup includes every logged day, so fetch the ones not loaded yet.
-    if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { if (!loadedDays.has(x.id)) { state.log[x.id] = structuredClone(x.data().entries || []); loadedDays.add(x.id); synced["days/" + x.id] = JSON.stringify({ entries: state.log[x.id] }); } }); } catch {}
+    if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { if (!loadedDays.has(x.id)) { state.log[x.id] = structuredClone(x.data().entries || []); loadedDays.add(x.id); synced["days/" + x.id] = canon({ entries: state.log[x.id] }); } }); } catch {}
     const data = JSON.stringify(state, null, 2), filename = `calorie-backup-${today()}.json`;
     const dl = window.claude?.use ? await claude.use("downloads") : null;
     if (dl) { try { await dl.save({ filename, data }); } catch (e) { if (e.code !== "declined") notice("The backup couldn't be saved here."); } return; }
