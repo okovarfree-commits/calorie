@@ -18,6 +18,8 @@ main{max-width:640px;margin:0 auto;padding:0 16px 12px}
 .me{display:flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;border-radius:50%}
 .me.on{border-color:var(--accent);color:var(--accent)}
 .me svg{width:20px;height:20px}
+.navcard{display:flex;width:100%;justify-content:space-between;align-items:center;gap:12px;text-align:left;font-size:1.3rem}
+.navcard b{font-size:1rem}.navcard .muted{font-size:.85rem}
 .sync{max-width:640px;margin:8px auto 0;padding:8px 12px;border-radius:8px;background:var(--danger-bg);color:var(--danger);font-size:.9rem}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 h2{margin:8px 0}h3{margin:0 0 6px;font-size:1rem}
@@ -433,11 +435,12 @@ function closeDlg() { dlg.close(); }
 dlg.addEventListener("click", e => { if (e.target === dlg) closeDlg(); });
 
 // ---------- rendering ----------
-const TABS = [["today", "Today"], ["chat", "Assistant"], ["recipes", "Recipes"], ["shop", "Shop"], ["ingredients", "Foods"]];
-// Goals and backup live on the profile page, opened from the round button at the top.
+const TABS = [["today", "Today"], ["chat", "Assistant"], ["recipes", "Recipes"], ["shop", "Shop"]];
+// Goals, foods and backup live on the profile page, opened from the round button at the top.
 const PERSON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>`;
 function render() {
-  document.getElementById("top").innerHTML = `<span class="brand">Kitchen Macros</span><button class="me${ui.tab === "goals" ? " on" : ""}" data-act="tab" data-v="${ui.tab === "goals" ? "today" : "goals"}" aria-label="${ui.tab === "goals" ? "Close profile" : "Profile and goals"}">${PERSON}</button>`;
+  const inProfile = ui.tab === "goals" || ui.tab === "ingredients";
+  document.getElementById("top").innerHTML = `<span class="brand">Kitchen Macros</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${PERSON}</button>`;
   document.getElementById("nav").innerHTML = TABS.map(([k, n]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}">${n}</button>`).join("");
   const hadFocus = document.activeElement?.id === "chatIn";
   document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, shop: viewShop, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
@@ -489,7 +492,8 @@ function viewRecipes() {
 
 function viewIngredients() {
   const list = [...state.ingredients].sort((a, b) => a.name.localeCompare(b.name));
-  return `<div class="row between"><h2>Ingredients</h2><button class="primary" data-act="editIng">+ New</button></div>
+  return `<button class="small" data-act="tab" data-v="goals" style="margin-top:8px">‹ Profile</button>
+  <div class="row between"><h2>My foods</h2><button class="primary" data-act="editIng">+ New</button></div>
   <p class="muted">Values are per 100 g (or 100 ml). Ingredients you type into recipes are added here automatically — edit any of them to match your package label.</p>
   <div class="card">${list.length ? list.map(i => `<div class="item"><div><div>${esc(i.name)}</div><div class="muted">per 100g: ${macroLine(i)}</div>${i.src || pieceOf(i) ? `<div class="muted">${[pieceOf(i) && `1 ${pieceOf(i).one} = ${r(pieceOf(i).g)} g`, i.src && esc(i.src)].filter(Boolean).join(" · ")}</div>` : ""}</div>
     <div class="row"><button class="small" data-act="editIng" data-v="${i.id}">Edit</button><button class="small danger" data-act="delIng" data-v="${i.id}">✕</button></div></div>`).join("") : `<span class="muted">Nothing here yet.</span>`}</div>`;
@@ -497,7 +501,10 @@ function viewIngredients() {
 
 function viewGoals() {
   const g = state.goals;
-  return `<h2>Profile</h2><form class="card" data-form="goals"><h3>Daily goals</h3>
+  const nFoods = state.ingredients.length;
+  return `<h2>Profile</h2>
+  <button class="card navcard" data-act="tab" data-v="ingredients"><span><b>My foods</b><span class="muted" style="display:block">${nFoods ? `${nFoods} food${nFoods == 1 ? "" : "s"} with your nutrition values and piece sizes` : "Foods you use in recipes appear here"}</span></span><span aria-hidden="true">›</span></button>
+  <form class="card" data-form="goals"><h3>Daily goals</h3>
     <label>Daily calories (kcal)</label><input name="kcal" inputmode="decimal" value="${g.kcal}">
     <label>Protein (g)</label><input name="p" inputmode="decimal" value="${g.p}">
     <label>Carbs (g)</label><input name="c" inputmode="decimal" value="${g.c}">
@@ -692,7 +699,7 @@ function recipeDialog(id, draft, onSaved) {
         x.status = "Looking up…"; x.n = null; refresh(k);
         const res = await resolveFood(name);
         if (rows[k] !== x || x.name.trim() !== name) return; // edited meanwhile
-        x.n = res; x.status = res ? res.src : "Not found — try another name, or add it on the Foods tab";
+        x.n = res; x.status = res ? res.src : "Not found — try another name, or add it under Profile › My foods";
         // Counted foods default to pieces, unless a gram amount is already typed.
         const pc = pieceOf(res); x.unit = pc && (!num(x.amt) || num(x.amt) < 20) ? "pc" : "g";
       }
@@ -712,7 +719,7 @@ function recipeDialog(id, draft, onSaved) {
       used.forEach(x => { if (!x.n && !x.pending) lookup(rows.indexOf(x)); });
       await Promise.all(used.map(x => x.pending));
       const missing = used.filter(x => !x.n).map(x => x.name.trim());
-      if (missing.length) { err.textContent = `Couldn't find: ${missing.join(", ")}. Change the name or add it on the Ingredients tab.`; return; }
+      if (missing.length) { err.textContent = `Couldn't find: ${missing.join(", ")}. Change the name or add it under Profile › My foods.`; return; }
       if (!used.length) { err.textContent = "Add at least one ingredient."; return; }
       rc.name = f.name.value.trim(); rc.servings = num(f.servings.value) || 1;
       rc.items = used.map(x => { const ingId = ensureIngredient(x.name, x.n), pc = rowPiece(x);
