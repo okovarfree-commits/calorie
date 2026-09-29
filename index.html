@@ -3,24 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Calorie Tracker</title>
+<title>Kitchen Macros</title>
 <style>
-:root{--bg:#f5f6f8;--card:#fff;--text:#1c1f24;--muted:#6b7280;--line:#e5e7eb;--accent:#16a34a;--p:#3b82f6;--c:#f59e0b;--f:#ef4444;--danger:#dc2626}
-@media(prefers-color-scheme:dark){:root{--bg:#111318;--card:#1b1e25;--text:#eceef2;--muted:#9aa1ad;--line:#2b303a}}
+/* One-column mobile app: day summary on top, meal cards below, tab bar fixed at the bottom. */
+:root{--bg:#f3f5f1;--card:#fff;--text:#1b211c;--muted:#667067;--line:#e1e6df;--accent:#2f8a4c;--on-accent:#fff;--p:#2f6fd6;--c:#c98a0b;--f:#d2453a;--danger:#c7362b;--danger-bg:#fbe9e7;color-scheme:light}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;color-scheme:dark}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,sans-serif;padding-bottom:70px}
-main{max-width:640px;margin:0 auto;padding:12px}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding-bottom:calc(70px + env(safe-area-inset-bottom,0px));font-variant-numeric:tabular-nums}
+main{max-width:640px;margin:0 auto;padding:12px 16px}
+.sync{max-width:640px;margin:8px auto 0;padding:8px 12px;border-radius:8px;background:var(--danger-bg);color:var(--danger);font-size:.9rem}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 h2{margin:8px 0}h3{margin:0 0 6px;font-size:1rem}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
 .row{display:flex;gap:8px;align-items:center}.between{justify-content:space-between}.grow{flex:1}
 .muted{color:var(--muted);font-size:.85rem}
 button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:8px 12px;cursor:pointer}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 button.danger{color:var(--danger)}
 button.small{padding:3px 8px;font-size:.85rem}
 input,select{font:inherit;width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text)}
 label{display:block;font-size:.85rem;color:var(--muted);margin:8px 0 2px}
-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line)}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
 nav button{flex:1;border:0;border-radius:0;padding:14px 4px;background:none}
 nav button.on{color:var(--accent);font-weight:600}
 .bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:3px 0 8px}
@@ -32,11 +36,12 @@ nav button.on{color:var(--accent);font-weight:600}
 .item:first-of-type{border-top:0}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 dialog{border:1px solid var(--line);border-radius:14px;background:var(--card);color:var(--text);width:min(94vw,520px);padding:16px;max-height:90vh}
-dialog::backdrop{background:rgba(0,0,0,.5)}
+dialog::backdrop{background:rgb(0 0 0 / .5)}
 .dot-p{color:var(--p)}.dot-c{color:var(--c)}.dot-f{color:var(--f)}
 </style>
 </head>
 <body>
+<p id="sync" class="sync" role="status" hidden></p>
 <main id="app"></main>
 <nav id="nav"></nav>
 <dialog id="dlg"></dialog>
@@ -58,7 +63,72 @@ function load() {
   const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 } };
   try { return Object.assign(def, JSON.parse(localStorage.getItem(KEY)) || {}); } catch { return def; }
 }
-function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+
+// ---------- storage ----------
+// Inside claude.ai the data lives in the artifact's database (synced across devices):
+// "app/settings" holds goals, ingredients and recipes; "days/<date>" holds one day's log.
+// Opened as a plain file it falls back to this browser's localStorage.
+let db = null;
+const synced = {}, chains = {}, loadedDays = new Set();
+function put(path, body) {
+  const js = JSON.stringify(body); if (synced[path] === js) return; synced[path] = js;
+  syncStatus(1);
+  chains[path] = (chains[path] || Promise.resolve()).then(() => db.doc(path).set(body))
+    .then(() => syncStatus(-1), e => { delete synced[path]; syncStatus(-1, e); });
+}
+let pending = 0, syncErr = "";
+function syncStatus(d, e) {
+  pending += d; if (e) syncErr = e.code === "quota_exceeded" ? "Storage is full. Export a backup and delete old days." : "Couldn't save the last change. Check your connection; it will retry on your next edit.";
+  else if (!pending) syncErr = "";
+  const el = document.getElementById("sync"); if (el) { el.textContent = syncErr; el.hidden = !syncErr; }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+  if (!db) return;
+  put("app/settings", { goals: state.goals, ingredients: state.ingredients, recipes: state.recipes });
+  for (const d of loadedDays) if (state.log[d]) put("days/" + d, { entries: state.log[d] });
+}
+async function loadDay(d) {
+  if (!db || loadedDays.has(d)) return;
+  try {
+    const snap = await db.doc("days/" + d).get();
+    if (snap.exists) { const body = snap.data(); state.log[d] = structuredClone(body.entries || []); synced["days/" + d] = JSON.stringify({ entries: state.log[d] }); }
+    else delete state.log[d];
+    loadedDays.add(d);
+  } catch { syncErr = "Couldn't load this day. Check your connection and open it again."; }
+}
+async function connect() {
+  if (!window.claude?.use) return;
+  const handle = await claude.use("db"); if (!handle) return;
+  ui.loading = true; render();
+  try {
+    const snap = await handle.doc("app/settings").get();
+    db = handle;
+    if (snap.exists) {
+      const b = structuredClone(snap.data());
+      state = { goals: b.goals || state.goals, ingredients: b.ingredients || [], recipes: b.recipes || [], log: {} };
+      synced["app/settings"] = JSON.stringify({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes });
+    } else {
+      // First run in this account: carry over anything saved in this browser.
+      Object.keys(state.log).forEach(d => loadedDays.add(d));
+      save();
+    }
+    await loadDay(ui.date);
+  } catch { syncErr = "Couldn't load your saved data. Reload the page to try again."; }
+  ui.loading = false; render();
+}
+async function goToDate(d) { ui.date = d; if (db && !loadedDays.has(d)) { ui.loading = true; render(); await loadDay(d); ui.loading = false; } render(); }
+
+// In-page confirmation (the claude.ai viewer ignores window.confirm).
+function ask(msg, okLabel = "Delete") {
+  return new Promise(res => {
+    openDlg(`<p>${esc(msg)}</p><div class="row"><button type="button" class="grow" id="no">Cancel</button><button type="button" class="grow primary" id="yes">${esc(okLabel)}</button></div>`, d => {
+      d.querySelector("#no").onclick = () => { closeDlg(); res(false); };
+      d.querySelector("#yes").onclick = () => { closeDlg(); res(true); };
+    });
+  });
+}
+function notice(msg) { openDlg(`<p>${esc(msg)}</p><button type="button" class="primary" data-close>OK</button>`); }
 
 // ---------- nutrition math ----------
 const ZERO = () => ({ kcal: 0, p: 0, c: 0, f: 0 });
@@ -241,6 +311,16 @@ async function lookupOnline(query) {
   } catch { return null; } finally { clearTimeout(timer); }
 }
 
+// Inside claude.ai: ask Claude for typical values when nothing else knows the food.
+async function lookupAI(query) {
+  const sample = window.claude?.use ? await claude.use("sample") : null; if (!sample) return null;
+  try {
+    const j = await sample.json(`Give typical nutrition values per 100 g for the food "${query}" as it is usually bought (raw unless the name says cooked), averaged from standard food composition tables. Reply with JSON only: {"name": short English food name, "kcal": number, "p": protein grams, "c": carbohydrate grams, "f": fat grams}. If "${query}" is not a food, reply {"name": null}.`, { modelTier: "quick" });
+    const ok = x => typeof x === "number" && isFinite(x) && x >= 0 && x <= 900;
+    if (!j || !j.name || !["kcal", "p", "c", "f"].every(k => ok(j[k]))) return null;
+    return { name: String(j.name).slice(0, 60), kcal: Math.round(j.kcal), p: j.p, c: j.c, f: j.f, src: "estimated by Claude from typical values" };
+  } catch { return null; }
+}
 const ingByName = name => { const k = norm(name).join(" "); return state.ingredients.find(i => norm(i.name).join(" ") === k); };
 
 // Nutrition for a typed name: your saved ingredient, else built-in table, else online average.
@@ -249,7 +329,8 @@ async function resolveFood(name, skipOwn = false) {
   const b = findFood(name), fromTable = b && { name: b.name, kcal: b.kcal, p: b.p, c: b.c, f: b.f, src: `typical values for ${b.name}` };
   if (b?.strong) return fromTable;
   // Only a loose match (e.g. "almond milk" ~ "milk"): prefer the online average, fall back to the table.
-  const o = await lookupOnline(name); return o ? { name: name.trim(), ...o } : fromTable;
+  const o = await lookupOnline(name); if (o) return { name: name.trim(), ...o };
+  return fromTable || await lookupAI(name);
 }
 function ensureIngredient(name, n) {
   const own = ingByName(name) || ingByName(n.name); if (own) return own.id;
@@ -278,6 +359,7 @@ function progress(label, val, goal, unit) {
 }
 
 function viewToday() {
+  if (ui.loading) return `<p class="muted" style="text-align:center;margin-top:40px">Loading your log…</p>`;
   const g = state.goals, t = dayTotal(ui.date), left = g.kcal - t.kcal;
   const shift = n => { const d = new Date(ui.date + "T12:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
   const meals = MEALS.map(m => {
@@ -467,30 +549,33 @@ const actions = {
   logRecipe: v => { ui.tab = "today"; entryDialog("Lunch", v); },
   delEntry: v => { state.log[ui.date] = dayEntries(ui.date).filter(e => e.id !== v); save(); },
   editIng: v => ingDialog(v),
-  delIng: v => {
+  delIng: async v => {
     const used = state.recipes.filter(rc => rc.items.some(it => it.ingId === v)).map(rc => rc.name);
-    if (used.length && !confirm(`Used in: ${used.join(", ")}. Delete anyway? It will count as 0 in those recipes.`)) return;
-    if (!used.length && !confirm("Delete ingredient?")) return;
-    state.ingredients = state.ingredients.filter(i => i.id !== v); save();
+    if (!await ask(used.length ? `Used in: ${used.join(", ")}. Delete anyway? It will count as 0 in those recipes.` : "Delete this ingredient?")) return;
+    state.ingredients = state.ingredients.filter(i => i.id !== v); save(); render();
   },
   editRecipe: v => recipeDialog(v),
   favRecipe: v => { const rc = state.recipes.find(x => x.id === v); rc.fav = !rc.fav; save(); },
   dupRecipe: v => { const rc = structuredClone(state.recipes.find(x => x.id === v)); rc.id = uid(); rc.name += " (copy)"; rc.fav = false; state.recipes.push(rc); save(); },
-  delRecipe: v => { if (confirm("Delete recipe? Past log entries are kept.")) { state.recipes = state.recipes.filter(x => x.id !== v); save(); } },
-  export: () => {
+  delRecipe: async v => { if (await ask("Delete this recipe? Days you already logged keep their numbers.")) { state.recipes = state.recipes.filter(x => x.id !== v); save(); render(); } },
+  export: async () => {
+    // Backup includes every logged day, so fetch the ones not loaded yet.
+    if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { if (!loadedDays.has(x.id)) { state.log[x.id] = structuredClone(x.data().entries || []); loadedDays.add(x.id); synced["days/" + x.id] = JSON.stringify({ entries: state.log[x.id] }); } }); } catch {}
+    const data = JSON.stringify(state, null, 2), filename = `calorie-backup-${today()}.json`;
+    const dl = window.claude?.use ? await claude.use("downloads") : null;
+    if (dl) { try { await dl.save({ filename, data }); } catch (e) { if (e.code !== "declined") notice("The backup couldn't be saved here."); } return; }
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" }));
-    a.download = `calorie-backup-${today()}.json`; a.click();
+    a.href = URL.createObjectURL(new Blob([data], { type: "application/json" })); a.download = filename; a.click();
   },
   import: () => {
-    const inp = document.createElement("input"); inp.type = "file"; inp.accept = "application/json";
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = "application/json,.json";
     inp.onchange = async () => {
-      try {
-        const d = JSON.parse(await inp.files[0].text());
-        if (!Array.isArray(d.ingredients) || !Array.isArray(d.recipes) || typeof d.log !== "object") throw 0;
-        if (!confirm("Replace all current data with this backup?")) return;
-        state = Object.assign({ goals: state.goals }, d); save(); render();
-      } catch { alert("That file is not a valid backup."); }
+      let d;
+      try { d = JSON.parse(await inp.files[0].text()); if (!Array.isArray(d.ingredients) || !Array.isArray(d.recipes) || typeof d.log !== "object") throw 0; }
+      catch { notice("That file isn't a backup from this app."); return; }
+      if (!await ask("Replace your ingredients, recipes and goals with this backup? Days in the backup replace the same days here.", "Replace")) return;
+      state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log } };
+      Object.keys(d.log).forEach(x => loadedDays.add(x)); save(); render();
     };
     inp.click();
   },
@@ -500,11 +585,12 @@ document.addEventListener("click", e => {
   if (e.target.closest("[data-close]")) return closeDlg();
   const el = e.target.closest("[data-act]");
   if (!el || el.tagName === "INPUT") return;
+  if (el.dataset.act === "date") return goToDate(el.dataset.v);
   actions[el.dataset.act](el.dataset.v);
   if (!dlg.open) render();
 });
 document.addEventListener("change", e => {
-  if (e.target.dataset.act === "pickDate" && e.target.value) { ui.date = e.target.value; render(); }
+  if (e.target.dataset.act === "pickDate" && e.target.value) goToDate(e.target.value);
 });
 document.addEventListener("input", e => {
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
@@ -519,6 +605,7 @@ document.addEventListener("submit", e => {
 });
 
 render();
+connect();
 </script>
 </body>
 </html>
