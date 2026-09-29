@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kitchen Macros</title>
+<title>My kitchen</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Figtree:wght@400;500;600;700&display=swap">
@@ -683,7 +683,7 @@ const TABS = [["today", "Today", "plate"], ["chat", "Assistant", "spark"], ["rec
 // Goals, foods and backup live on the profile page, opened from the round button at the top.
 function render() {
   const inProfile = ui.tab === "goals" || ui.tab === "ingredients";
-  document.getElementById("top").innerHTML = `<span class="brand">${LOGO}Kitchen Macros</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${inProfile ? I.close : I.person}</button>`;
+  document.getElementById("top").innerHTML = `<span class="brand">${LOGO}My kitchen</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${inProfile ? I.close : I.person}</button>`;
   document.getElementById("nav").innerHTML = `<div class="tabs">${TABS.map(([k, n, ic]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}"${ui.tab === k ? ` aria-current="page"` : ""}><span class="ic">${I[ic]}</span>${n}</button>`).join("")}</div>`;
   const hadFocus = document.activeElement?.id === "chatIn";
   document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, shop: viewShop, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
@@ -1357,7 +1357,7 @@ const actions = {
       try { d = JSON.parse(await inp.files[0].text()); if (!Array.isArray(d.ingredients) || !Array.isArray(d.recipes) || typeof d.log !== "object") throw 0; }
       catch { notice("That file isn't a backup from this app."); return; }
       if (!await ask("Replace your ingredients, recipes and goals with this backup? Days in the backup replace the same days here.", "Replace")) return;
-      state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log }, shop: d.shop || state.shop };
+      state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log }, shop: d.shop || state.shop, prefs: { ...emptyPrefs(), ...(d.prefs || state.prefs) } };
       Object.keys(d.log).forEach(x => loadedDays.add(x)); save(); render();
     };
     inp.click();
