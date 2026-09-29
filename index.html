@@ -49,7 +49,9 @@ dialog::backdrop{background:rgb(0 0 0 / .5)}
 <script>
 "use strict";
 const KEY = "calorie-tracker-v1";
+// "Snack" is kept as the stored key so older entries still show up; it's labelled "Other food".
 const MEALS = ["Breakfast", "Lunch", "Dinner", "Snack"];
+const mealName = m => m === "Snack" ? "Other food" : m;
 const uid = () => Math.random().toString(36).slice(2, 10);
 const today = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -365,10 +367,12 @@ function viewToday() {
   const meals = MEALS.map(m => {
     const es = dayEntries(ui.date).filter(e => e.meal === m);
     const sub = es.reduce((a, e) => add(a, e), ZERO());
-    return `<div class="card"><div class="row between"><h3>${m}</h3><span class="muted">${r(sub.kcal)} kcal</span></div>
-      ${es.map(e => `<div class="item"><div><div>${esc(e.name)}</div><div class="muted">${esc(e.amount || "")} · ${macroLine(e)}</div></div>
-        <button class="small danger" data-act="delEntry" data-v="${e.id}">✕</button></div>`).join("")}
-      <button class="small" data-act="addEntry" data-v="${m}">+ Add</button></div>`;
+    const other = m === "Snack";
+    return `<div class="card"><div class="row between"><h3>${mealName(m)}</h3><span class="muted">${other && es.length ? `${es.length} item${es.length == 1 ? "" : "s"} · ` : ""}${r(sub.kcal)} kcal</span></div>
+      ${other && !es.length ? `<p class="muted" style="margin:0 0 8px">Anything outside your meals. Log as many times as you like.</p>` : ""}
+      ${es.map(e => `<div class="item"><div><div>${esc(e.name)}</div><div class="muted">${other && e.at ? `${e.at} · ` : ""}${esc(e.amount || "")} · ${macroLine(e)}</div></div>
+        <button class="small danger" data-act="delEntry" data-v="${e.id}" aria-label="Remove ${esc(e.name)}">✕</button></div>`).join("")}
+      <button class="small${other ? " primary" : ""}" data-act="addEntry" data-v="${m}">+ ${other ? "Log food" : "Add"}</button></div>`;
   }).join("");
   return `<div class="row between"><button data-act="date" data-v="${shift(-1)}">‹</button>
     <div class="grow" style="text-align:center"><b>${ui.date === today() ? "Today" : ui.date}</b>
@@ -416,10 +420,10 @@ function viewGoals() {
 // ---------- forms ----------
 function entryDialog(meal, preRecipe) {
   const favs = state.recipes.filter(x => x.fav);
-  openDlg(`<h3>Add to ${meal}</h3>
+  openDlg(`<h3>${meal === "Snack" ? "Log food" : `Add to ${meal}`}</h3>
   ${favs.length ? `<div class="muted">Favorites</div><div class="chips" id="favs">${favs.map(x => `<button class="small" data-fav="${x.id}">${esc(x.name)}</button>`).join("")}</div>` : ""}
   <form id="f"><label>Type</label><select name="type"><option value="recipe">Recipe (servings)</option><option value="ingredient">Ingredient (grams)</option><option value="quick">Quick add (manual)</option></select>
-  <div id="fields"></div><label>Meal</label><select name="meal">${MEALS.map(m => `<option ${m === meal ? "selected" : ""}>${m}</option>`).join("")}</select>
+  <div id="fields"></div><label>Meal</label><select name="meal">${MEALS.map(m => `<option value="${m}" ${m === meal ? "selected" : ""}>${mealName(m)}</option>`).join("")}</select>
   <div class="row" style="margin-top:12px"><button type="button" class="grow" data-close>Cancel</button><button class="primary grow">Add</button></div></form>`, d => {
     const f = d.querySelector("#f"), fields = d.querySelector("#fields");
     const opts = (arr) => arr.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
@@ -444,7 +448,8 @@ function entryDialog(meal, preRecipe) {
         const i = ing(ensureIngredient(q, n)), g = num(f.amt.value); e2 = { name: i.name, amount: `${r(g)} g`, ...add(ZERO(), i, g / 100) };
       }
       else e2 = { name: f.name.value.trim() || "Quick add", amount: "", kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value) };
-      (state.log[ui.date] ||= []).push({ id: uid(), meal: f.meal.value, ...e2 });
+      const now = new Date(), at = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
+      (state.log[ui.date] ||= []).push({ id: uid(), meal: f.meal.value, at, ...e2 });
       save(); closeDlg(); render();
     };
   });
