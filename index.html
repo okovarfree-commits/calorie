@@ -6,9 +6,9 @@
 <title>Kitchen Macros</title>
 <style>
 /* One-column mobile app: day summary on top, meal cards below, tab bar fixed at the bottom. */
-:root{--bg:#f3f5f1;--card:#fff;--text:#1b211c;--muted:#667067;--line:#e1e6df;--accent:#2f8a4c;--on-accent:#fff;--p:#2f6fd6;--c:#c98a0b;--f:#d2453a;--danger:#c7362b;--danger-bg:#fbe9e7;color-scheme:light}
-@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;color-scheme:dark}}
-:root[data-theme="dark"]{--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;color-scheme:dark}
+:root{--bg:#f3f5f1;--card:#fff;--text:#1b211c;--muted:#667067;--line:#e1e6df;--accent:#2f8a4c;--on-accent:#fff;--p:#2f6fd6;--c:#c98a0b;--f:#d2453a;--danger:#c7362b;--danger-bg:#fbe9e7;--ok-bg:#dcefe0;--bad-bg:#f9dcd8;color-scheme:light}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;--ok-bg:#1d3a25;--bad-bg:#43211d;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#121512;--card:#1b201c;--text:#e9eee8;--muted:#98a397;--line:#2c332d;--accent:#4fb56d;--on-accent:#0d1a10;--p:#6ea1f0;--c:#e4ad3c;--f:#f07a6f;--danger:#f07a6f;--danger-bg:#3a1c19;--ok-bg:#1d3a25;--bad-bg:#43211d;color-scheme:dark}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding-bottom:calc(70px + env(safe-area-inset-bottom,0px));font-variant-numeric:tabular-nums}
@@ -62,6 +62,18 @@ dialog::backdrop{background:rgb(0 0 0 / .5)}
 .chip.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .tags{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 6px}
 .tag{font-size:.75rem;font-weight:600;letter-spacing:.02em;padding:2px 8px;border-radius:999px;border:1px solid currentColor}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin:10px 0}
+.cal .wd{font-size:.75rem;color:var(--muted);text-align:center}
+.cal button{padding:0;aspect-ratio:1;max-width:100%;border-radius:8px;font-variant-numeric:tabular-nums;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1}
+.cal button small{font-size:.62rem;color:var(--muted)}
+.cal .hit{background:var(--ok-bg);border-color:var(--accent);color:var(--text)}
+.cal .miss{background:var(--bad-bg);border-color:var(--danger);color:var(--text)}
+.cal .future{opacity:.4}
+.cal .sel{outline:2px solid var(--text);outline-offset:1px}
+.pill{display:inline-block;font-size:.8rem;font-weight:600;padding:2px 10px;border-radius:999px;margin-top:4px}
+.pill.hit{background:var(--ok-bg);color:var(--accent)}.pill.miss{background:var(--bad-bg);color:var(--danger)}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:.8rem;color:var(--muted)}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:4px;border:1px solid var(--line)}
 .tag-cal{color:var(--f)}.tag-protein{color:var(--p)}.tag-carb{color:var(--c)}
 .composer{display:flex;gap:8px;align-items:flex-end}
 .composer textarea{flex:1;min-width:0;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);resize:vertical}
@@ -457,6 +469,51 @@ function progress(label, val, goal, unit) {
   <div class="bar ${goal && val > goal ? "over" : ""}"><i style="width:${pct}%"></i></div></div>`;
 }
 
+// ---------- goal history ----------
+const CAL_ICON = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="vertical-align:-2px"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>`;
+const GOAL_MODES = { min: "Reach at least my calorie goal (building / bulking)", max: "Stay under my calorie goal (losing weight)", range: "Stay within 10% of my calorie goal (maintaining)" };
+// A logged day counts as hit or missed by calories, using the kind of goal chosen in Profile.
+function dayStatus(t, n) {
+  if (!n) return "none";
+  const g = state.goals.kcal || 0, mode = state.goals.mode || "min";
+  if (!g) return "none";
+  const ok = mode === "max" ? t.kcal <= g : mode === "range" ? Math.abs(t.kcal - g) <= g * 0.1 : t.kcal >= g * 0.95;
+  return ok ? "hit" : "miss";
+}
+const niceDate = d => new Date(d + "T12:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+
+// Totals for every logged day (fetched once per calendar opening; days already open here are fresher).
+async function allDayTotals() {
+  const tot = {};
+  if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { const es = x.data().entries || []; tot[x.id] = { t: es.reduce((a, e) => add(a, e), ZERO()), n: es.length }; }); } catch {}
+  for (const d of Object.keys(state.log)) if (!db || loadedDays.has(d)) tot[d] = { t: dayTotal(d), n: dayEntries(d).length };
+  return tot;
+}
+async function calendarDialog(month) {
+  month ||= ui.date.slice(0, 7);
+  openDlg(`<h3>History</h3><p class="muted">Loading…</p>`);
+  const tot = await allDayTotals();
+  const draw = m => {
+    const [y, mo] = m.split("-").map(Number), first = new Date(y, mo - 1, 1), days = new Date(y, mo, 0).getDate();
+    const lead = (first.getDay() + 6) % 7, now = today();
+    const prev = new Date(y, mo - 2, 15).toISOString().slice(0, 7), next = new Date(y, mo, 15).toISOString().slice(0, 7);
+    let hit = 0, miss = 0, cells = "";
+    for (let d = 1; d <= days; d++) {
+      const id = `${m}-${String(d).padStart(2, "0")}`, x = tot[id], st = id < now && x ? dayStatus(x.t, x.n) : "none";
+      if (st === "hit") hit++; if (st === "miss") miss++;
+      cells += `<button type="button" data-day="${id}" class="${st === "none" ? "" : st}${id > now ? " future" : ""}${id === ui.date ? " sel" : ""}" aria-label="${niceDate(id)}${st === "hit" ? ", goal hit" : st === "miss" ? ", goal missed" : ""}">${d}${x && x.n ? `<small>${r(x.t.kcal)}</small>` : ""}</button>`;
+    }
+    dlg.innerHTML = `<div class="row between"><button type="button" data-m="${prev}" aria-label="Previous month">‹</button><h3 style="margin:0">${first.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h3><button type="button" data-m="${next}" aria-label="Next month">›</button></div>
+      <div class="cal">${["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(w => `<span class="wd">${w}</span>`).join("")}${"<span></span>".repeat(lead)}${cells}</div>
+      <div class="legend"><span><i style="background:var(--ok-bg);border-color:var(--accent)"></i>Goal hit ${hit}</span><span><i style="background:var(--bad-bg);border-color:var(--danger)"></i>Missed ${miss}</span><span><i></i>Not logged</span></div>
+      <p class="muted" style="margin:8px 0">${GOAL_MODES[state.goals.mode || "min"]}: ${r(state.goals.kcal)} kcal. Change it in Profile.</p>
+      <button type="button" data-close>Close</button>`;
+    dlg.querySelectorAll("[data-m]").forEach(b => b.onclick = () => draw(b.dataset.m));
+    dlg.querySelectorAll("[data-day]").forEach(b => b.onclick = () => { closeDlg(); ui.tab = "today"; goToDate(b.dataset.day); });
+  };
+  draw(month);
+}
+
 function viewToday() {
   if (ui.loading) return `<p class="muted" style="text-align:center;margin-top:40px">Loading your log…</p>`;
   const g = state.goals, t = dayTotal(ui.date), left = g.kcal - t.kcal;
@@ -471,10 +528,12 @@ function viewToday() {
         <button class="small danger" data-act="delEntry" data-v="${e.id}" aria-label="Remove ${esc(e.name)}">✕</button></div>`).join("")}
       <button class="small${other ? " primary" : ""}" data-act="addEntry" data-v="${m}">+ ${other ? "Log food" : "Add"}</button></div>`;
   }).join("");
-  return `<div class="row between"><button data-act="date" data-v="${shift(-1)}">‹</button>
-    <div class="grow" style="text-align:center"><b>${ui.date === today() ? "Today" : ui.date}</b>
-    <input type="date" value="${ui.date}" data-act="pickDate" style="margin-top:4px"></div>
-    <button data-act="date" data-v="${shift(1)}">›</button></div>
+  const st = ui.date < today() ? dayStatus(t, dayEntries(ui.date).length) : "";
+  return `<div class="row between"><button data-act="date" data-v="${shift(-1)}" aria-label="Previous day">‹</button>
+    <div class="grow" style="text-align:center"><b>${ui.date === today() ? "Today" : niceDate(ui.date)}</b>
+    <div><button class="small" data-act="calendar" style="margin-top:4px">${CAL_ICON} Calendar</button></div>
+    ${st === "hit" ? `<span class="pill hit">Goal hit</span>` : st === "miss" ? `<span class="pill miss">Goal missed</span>` : ""}</div>
+    <button data-act="date" data-v="${shift(1)}" aria-label="Next day">›</button></div>
   <div class="card" style="margin-top:12px"><div class="row between"><div><div class="big">${r(t.kcal)}</div><div class="muted">eaten</div></div>
     <div style="text-align:right"><div class="big" style="color:${left < 0 ? "var(--danger)" : "var(--accent)"}">${r(Math.abs(left))}</div><div class="muted">${left < 0 ? "over" : "left"}</div></div></div>
     ${progress("Calories", t.kcal, g.kcal, "")}${progress("Protein", t.p, g.p, "g")}${progress("Carbs", t.c, g.c, "g")}${progress("Fat", t.f, g.f, "g")}</div>${meals}`;
@@ -533,6 +592,7 @@ function viewGoals() {
   return `<h2>Profile</h2>
   <button class="card navcard" data-act="tab" data-v="ingredients"><span><b>My foods</b><span class="muted" style="display:block">${nFoods ? `${nFoods} food${nFoods == 1 ? "" : "s"} with your nutrition values and piece sizes` : "Foods you use in recipes appear here"}</span></span><span aria-hidden="true">›</span></button>
   <form class="card" data-form="goals"><h3>Daily goals</h3>
+    <label for="gmode">What counts as hitting your goal</label><select id="gmode" name="mode">${Object.entries(GOAL_MODES).map(([k, v]) => `<option value="${k}" ${(g.mode || "min") === k ? "selected" : ""}>${v}</option>`).join("")}</select>
     <label>Daily calories (kcal)</label><input name="kcal" inputmode="decimal" value="${g.kcal}">
     <label>Protein (g)</label><input name="p" inputmode="decimal" value="${g.p}">
     <label>Carbs (g)</label><input name="c" inputmode="decimal" value="${g.c}">
@@ -913,6 +973,7 @@ const actions = {
   tab: v => { ui.tab = v; },
   date: v => { ui.date = v; },
   addEntry: v => entryDialog(v),
+  calendar: () => calendarDialog(),
   aiApply: v => aiApply(v),
   aiReset: () => { ui.chat = []; ui.chatErr = ""; },
   recCat: v => { ui.recCat = v; },
@@ -996,7 +1057,7 @@ document.addEventListener("submit", e => {
   if (e.target.dataset.form === "chat") { e.preventDefault(); aiSend(document.getElementById("chatIn").value); return; }
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
   e.preventDefault();
-  state.goals = { kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value) };
+  state.goals = { kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value), mode: f.mode.value };
   save(); ui.tab = "today"; render();
 });
 
