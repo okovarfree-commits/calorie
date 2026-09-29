@@ -546,16 +546,24 @@ function countedName(n, pc, base) {
   return `${n} ${unit} ${base}`;
 }
 
+// Recipes matching the search box that aren't planned yet (at most 6).
+function shopResults() {
+  const q = norm(ui.shopQ || ""); if (!q.length) return "";
+  const hits = state.recipes.filter(rc => !(state.shop.plan[rc.id] > 0) && q.every(w => norm(rc.name).some(x => x.startsWith(w)))).slice(0, 6);
+  return `<div class="chips" style="margin:8px 0">${hits.length ? hits.map(rc => `<button class="small" data-act="shopAdd" data-v="${rc.id}">+ ${esc(rc.name)}</button>`).join("") : `<span class="muted">No recipe matches "${esc(ui.shopQ)}".</span>`}</div>`;
+}
+
 function viewShop() {
   const sh = state.shop, list = shoppingList(), recs = [...state.recipes].sort((a, b) => a.name.localeCompare(b.name));
   const planned = recs.filter(rc => sh.plan[rc.id] > 0).length;
   const left = list.filter(x => !sh.checked[x.key]).length + sh.extra.filter(x => !x.done).length;
   const item = (key, label, sub, done, act) => `<label class="check${done ? " done" : ""}"><input type="checkbox" data-act="${act}" data-v="${esc(key)}" ${done ? "checked" : ""}><span class="what"><b>${label}</b>${sub ? `<div class="muted">${sub}</div>` : ""}</span></label>`;
   return `<h2>Shopping</h2>
-  <div class="card"><h3>What are you cooking?</h3><p class="muted" style="margin-top:0">Set how many portions of each recipe you want. The list scales the ingredients to match.</p>
-    ${recs.length ? recs.map(rc => { const n = sh.plan[rc.id] || 0; return `<div class="item"><div style="min-width:0"><div>${esc(rc.name)}</div><div class="muted">recipe makes ${r(rc.servings, 2)}${n ? ` · ${r(n / rc.servings, 2)}× the recipe` : ""}</div></div>
-      <div class="stepper"><button class="small" data-act="shopStep" data-v="${rc.id}:-1" aria-label="Fewer portions">−</button><input inputmode="decimal" value="${n || ""}" placeholder="0" data-shop="${rc.id}" aria-label="Portions of ${esc(rc.name)}"><button class="small" data-act="shopStep" data-v="${rc.id}:1" aria-label="More portions">+</button></div></div>`; }).join("")
-      : `<p class="muted">Save a recipe first, then plan portions here.</p>`}</div>
+  <div class="card"><h3>What are you cooking?</h3>
+    ${recs.length ? `<input id="shopSearch" type="search" placeholder="Search your recipes, e.g. chilli" value="${esc(ui.shopQ || "")}" autocomplete="off" aria-label="Search recipes"><div id="shopResults">${shopResults()}</div>` : ""}
+    ${recs.filter(rc => sh.plan[rc.id] > 0).map(rc => { const n = sh.plan[rc.id] || 0; return `<div class="item"><div style="min-width:0"><div>${esc(rc.name)}</div><div class="muted">recipe makes ${r(rc.servings, 2)}${n ? ` · ${r(n / rc.servings, 2)}× the recipe` : ""}</div></div>
+      <div class="stepper"><button class="small" data-act="shopStep" data-v="${rc.id}:-1" aria-label="Fewer portions">−</button><input inputmode="decimal" value="${n || ""}" placeholder="0" data-shop="${rc.id}" aria-label="Portions of ${esc(rc.name)}"><button class="small" data-act="shopStep" data-v="${rc.id}:1" aria-label="More portions">+</button></div></div>`; }).join("")}
+    ${!recs.length ? `<p class="muted">Save a recipe first, then plan portions here.</p>` : planned ? "" : `<p class="muted">Find a recipe and tap it to add it. Then set how many portions you want; the list scales the ingredients to match.</p>`}</div>
   <div class="card"><div class="row between"><h3>Shopping list</h3><span class="muted">${list.length + sh.extra.length ? `${left} left` : ""}</span></div>
     ${list.length ? list.map(x => item(x.key, esc(x.label), [x.note, x.from].filter(Boolean).map(esc).join(" · "), sh.checked[x.key], "shopTick")).join("") : `<p class="muted">${planned ? "Those recipes have no ingredients." : "Pick portions above and the list appears here."}</p>`}
     ${sh.extra.map(x => item(x.id, esc(x.text), "", x.done, "shopTickExtra")).join("")}
@@ -879,6 +887,7 @@ const actions = {
   addEntry: v => entryDialog(v),
   aiApply: v => aiApply(v),
   aiReset: () => { ui.chat = []; ui.chatErr = ""; },
+  shopAdd: v => { const rc = state.recipes.find(x => x.id === v); if (!rc) return; state.shop.plan[v] = rc.servings || 1; ui.shopQ = ""; save(); },
   shopStep: v => { const [id, d] = v.split(":"), n = Math.max(0, (state.shop.plan[id] || 0) + +d); if (n) state.shop.plan[id] = n; else delete state.shop.plan[id]; save(); },
   shopTick: v => { if (state.shop.checked[v]) delete state.shop.checked[v]; else state.shop.checked[v] = true; save(); },
   shopTickExtra: v => { const x = state.shop.extra.find(e => e.id === v); if (x) { x.done = !x.done; save(); } },
@@ -940,6 +949,7 @@ document.addEventListener("change", e => {
 });
 document.addEventListener("input", e => {
   if (e.target.id === "chatIn") { ui.chatDraft = e.target.value; return; }
+  if (e.target.id === "shopSearch") { ui.shopQ = e.target.value; document.getElementById("shopResults").innerHTML = shopResults(); return; }
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
   const kcalFromMacros = num(f.p.value) * 4 + num(f.c.value) * 4 + num(f.f.value) * 9;
   document.getElementById("gcheck").textContent = `Macros add up to ${r(kcalFromMacros)} kcal (protein 4, carbs 4, fat 9 per gram).`;
