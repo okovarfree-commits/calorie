@@ -370,7 +370,11 @@ function applySettings(b) {
 }
 async function connect() {
   if (!window.claude?.use) { ui.ai = null; return; }
-  claude.use("sample").then(sm => { ui.ai = sm; if (ui.tab === "chat") render(); });
+  claude.use("sample").then(sm => {
+    ui.ai = sm; if (ui.tab === "chat") render();
+    // Label scanning needs a view that can send photos to Claude.
+    sm?.limits?.().then(l => { ui.scan = l?.images || null; if (ui.scan && !dlg.open) render(); }, () => {});
+  });
   const handle = await claude.use("db"); if (!handle) return;
   ui.loading = true; render();
   try {
@@ -653,7 +657,7 @@ const foodDatalist = () => `<datalist id="foods">${[...new Set([...state.ingredi
 
 // ---------- dialog helper ----------
 const dlg = document.getElementById("dlg");
-function openDlg(html, onOpen) { dlg.innerHTML = html; dlg.showModal(); onOpen && onOpen(dlg); }
+function openDlg(html, onOpen) { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); onOpen && onOpen(dlg); }
 function closeDlg() { dlg.close(); }
 dlg.addEventListener("click", e => { if (e.target === dlg) closeDlg(); });
 
@@ -674,6 +678,7 @@ const I = {
   chev: svg(`<path d="M9.5 6l6 6-6 6"/>`),
   cal: svg(`<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>`),
   search: svg(`<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>`),
+  camera: svg(`<path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.3l1.4-2h5.6l1.4 2h1.3A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z"/><circle cx="12" cy="12.8" r="3.6"/>`),
   send: svg(`<path d="M12 19V5M6 11l6-6 6 6"/>`, ` stroke-width="2.4"`),
   star: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3.2l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.6l-5.2 2.7 1-5.8L3.5 9.4l5.9-.8z"/></svg>`,
 };
@@ -805,7 +810,7 @@ function viewRecipes() {
 function viewIngredients() {
   const list = [...state.ingredients].sort((a, b) => a.name.localeCompare(b.name));
   return `<button class="small" data-act="tab" data-v="goals" style="margin:2px 0 4px;padding-left:8px">${I.left}Profile</button>
-  <div class="page-head"><h2>My foods</h2><button class="small primary" data-act="editIng">${I.plus}New</button></div>
+  <div class="page-head"><h2>My foods</h2><div class="row">${ui.scan ? `<button class="small" data-act="scanIng">${I.camera}Scan</button>` : ""}<button class="small primary" data-act="editIng">${I.plus}New</button></div></div>
   <p class="muted">Values per 100 g (or 100 ml). Foods you type into recipes land here; edit any of them to match the package label.</p>
   <div class="card">${list.length ? list.map(i => `<div class="item"><div class="grow"><div style="font-weight:600">${esc(i.name)}</div><div class="muted" style="margin-top:2px">${macroLine(i)}</div>${i.src || pieceOf(i) ? `<div class="muted" style="font-size:.76rem;margin-top:2px">${[pieceOf(i) && `1 ${pieceOf(i).one} = ${r(pieceOf(i).g)} g`, i.src && esc(i.src)].filter(Boolean).join(" · ")}</div>` : ""}</div>
     <button class="small" data-act="editIng" data-v="${i.id}">Edit</button><button class="x" data-act="delIng" data-v="${i.id}" aria-label="Delete ${esc(i.name)}">${I.trash}</button></div>`).join("") : `<p class="muted" style="margin:0">Nothing here yet.</p>`}</div>`;
@@ -900,10 +905,11 @@ function shopText() {
 }
 
 // ---------- forms ----------
-function entryDialog(meal, preRecipe) {
+function entryDialog(meal, preRecipe, preFood) {
   const favs = state.recipes.filter(x => x.fav);
   openDlg(`<h3>${meal === "Snack" ? "Log food" : `Add to ${meal}`}</h3>
   ${favs.length ? `<p class="eyebrow" style="margin-top:6px">Favourites</p><div class="chips" id="favs">${favs.map(x => `<button type="button" class="chip" data-fav="${x.id}">${I.star.replace("<svg", `<svg style="color:var(--c);width:15px;height:15px"`)}${esc(x.name)}</button>`).join("")}</div>` : ""}
+  ${ui.scan ? `<button type="button" id="scanBtn" style="width:100%;margin-top:12px">${I.camera}Scan a package label</button>` : ""}
   <form id="f"><label>What are you adding?</label><select name="type"><option value="recipe">Recipe (servings)</option><option value="ingredient">Food (grams or pieces)</option><option value="quick">Quick add (manual)</option></select>
   <div id="fields"></div><label>Meal</label><select name="meal">${MEALS.map(m => `<option value="${m}" ${m === meal ? "selected" : ""}>${mealName(m)}</option>`).join("")}</select>
   <div class="foot"><button type="button" data-close>Cancel</button><button class="primary">Add</button></div></form>`, d => {
@@ -916,7 +922,9 @@ function entryDialog(meal, preRecipe) {
         : `<label>Name</label><input name="name" value="Quick add"><div class="grid2"><div><label>kcal</label><input name="kcal" inputmode="decimal"></div><div><label>Protein (g)</label><input name="p" inputmode="decimal"></div><div><label>Carbs (g)</label><input name="c" inputmode="decimal"></div><div><label>Fat (g)</label><input name="f" inputmode="decimal"></div></div>`;
       if (preRecipe && t === "recipe" && f.ref) f.ref.value = preRecipe;
     };
+    if (preFood) f.type.value = "ingredient";
     f.type.onchange = draw; draw();
+    d.querySelector("#scanBtn")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name)));
     // When the typed food is counted in pieces, offer pieces as the unit.
     fields.addEventListener("change", e => {
       if (e.target.name !== "food") return;
@@ -925,6 +933,7 @@ function entryDialog(meal, preRecipe) {
       u.innerHTML = pc ? `<select name="unit" aria-label="Unit"><option value="pc">${esc(pc.many)}</option><option value="g">g</option></select>` : "g";
       if (pc && num(f.amt.value) === 100) f.amt.value = 1;
     });
+    if (preFood && f.food) { f.food.value = preFood; f.food.dispatchEvent(new Event("change", { bubbles: true })); f.amt.select(); }
     d.querySelectorAll("[data-fav]").forEach(b => b.onclick = () => { f.type.value = "recipe"; draw(); f.ref.value = b.dataset.fav; f.amt.focus(); });
     f.onsubmit = async e => {
       e.preventDefault();
@@ -945,15 +954,51 @@ function entryDialog(meal, preRecipe) {
   });
 }
 
+// ---------- scan a package label ----------
+// Take or pick a photo of the nutrition table; Claude reads it and the "New food" sheet opens pre-filled to check.
+function scanLabel(afterSave) {
+  if (!ui.scan || !ui.ai) { notice("Scanning labels needs the app open in Claude (claude.ai or the Claude app)."); return; }
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = (ui.scan.mediaTypes || ["image/jpeg", "image/png"]).join(",");
+  inp.onchange = async () => {
+    const file = inp.files[0]; if (!file) return;
+    if (file.size > (ui.scan.maxInputBytes || 20e6)) { notice("That photo is too large. Try again with a smaller one."); return; }
+    openDlg(`<h3>Reading the label…</h3><p class="muted">Claude is reading the nutrition table.</p><div class="typing" style="margin:8px 0 4px"><i></i><i></i><i></i></div>`);
+    let j;
+    try {
+      j = await ui.ai.json(`The image is a photo of a food or drink product's packaging, taken by the user to add it to their calorie tracker.
+Read the product name (with brand) and the nutrition table. Reply with ONLY this JSON:
+{"name": "Brand product name", "unit": "g" or "ml", "per100": {"kcal": number, "p": protein g, "c": carbohydrate g, "f": fat g},
+ "serving": {"grams": number, "name": "bar"} or null, "note": "short remark, or empty"}
+Rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide by 4.184. If only per-serving values are printed, convert to per 100 g using the serving size. "serving" is the size of one piece/portion if the pack states it (a bar, a scoop, a slice, a can, a bottle, a biscuit), else null; "name" is a short singular word for it. Use "carbohydrate" (not "of which sugars") and "fat" (not "of which saturates"). If a number is unreadable, give your best estimate and say so in "note". If no nutrition table is visible, reply {"name": null, "note": "what you can see instead"}.`, { images: [file], cache: false });
+    } catch (e) {
+      closeDlg();
+      notice({ images_unavailable: "Photos can't be sent from this view.", image_rejected: "That photo couldn't be read. Try a JPEG or PNG under 20 MB.", rate_limited: "Too many requests for now. Try again in a minute.", not_granted: "This app isn't allowed to use Claude. Allow it when asked, then try again." }[e?.code] || "Couldn't read the label. Try again with a sharper photo of the nutrition table.");
+      return;
+    }
+    const ok = x => typeof x === "number" && isFinite(x) && x >= 0 && x <= 950, v = j?.per100 || {};
+    if (!j?.name || !["kcal", "p", "c", "f"].every(k => ok(v[k]))) {
+      closeDlg(); notice(`No nutrition table found${j?.note ? `: ${j.note}` : ""}. Take the photo straight on, close to the table.`); return;
+    }
+    const sv = j.serving && num(j.serving.grams) > 0 ? j.serving : null, one = sv ? String(sv.name || "serving").trim().toLowerCase().slice(0, 20) : "";
+    ingDialog(null, {
+      name: String(j.name).trim().slice(0, 60), kcal: Math.round(v.kcal), p: v.p, c: v.c, f: v.f,
+      src: `from the package label${j.unit === "ml" ? " (per 100 ml)" : ""}`, pieceG: sv ? num(sv.grams) : 0, piece: one,
+      note: j.note || "",
+    }, afterSave);
+  };
+  inp.click();
+}
+
 function pushEntry(meal, e) {
   const now = new Date(), at = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
   (state.log[ui.date] ||= []).push({ id: uid(), meal, at, ...e });
 }
 
-function ingDialog(id) {
-  const i = id ? ing(id) : { name: "", kcal: "", p: "", c: "", f: "" };
-  openDlg(`<h3>${id ? "Edit food" : "New food"}</h3><form id="f">${foodDatalist()}<label for="ingName">Name</label>
-  <div class="row"><input id="ingName" list="foods" name="name" value="${esc(i.name)}" class="grow" required><button type="button" id="look">Look up</button></div>
+function ingDialog(id, prefill, afterSave) {
+  const i = id ? ing(id) : prefill ? { ...prefill } : { name: "", kcal: "", p: "", c: "", f: "" };
+  openDlg(`<h3>${id ? "Edit food" : prefill ? "Check the label" : "New food"}</h3>${prefill ? `<p class="muted" style="margin:0 0 4px">Compare with the pack and fix anything that was misread${prefill.note ? `. Note: ${esc(prefill.note)}` : ""}.</p>` : ""}<form id="f">${foodDatalist()}<label for="ingName">Name</label>
+  <div class="row"><input id="ingName" list="foods" name="name" value="${esc(i.name)}" class="grow" required>${prefill ? "" : `<button type="button" id="look">Look up</button>`}</div>
   <p class="muted" id="src" style="margin-top:8px">Per 100 g${i.src ? ` · ${esc(i.src)}` : " · type a name and the values fill in"}</p>
   <div class="grid2"><div><label>kcal</label><input name="kcal" inputmode="decimal" value="${i.kcal}"></div><div><label>Protein (g)</label><input name="p" inputmode="decimal" value="${i.p}"></div>
   <div><label>Carbs (g)</label><input name="c" inputmode="decimal" value="${i.c}"></div><div><label>Fat (g)</label><input name="f" inputmode="decimal" value="${i.f}"></div></div>
@@ -971,15 +1016,18 @@ function ingDialog(id) {
       if (got.pieceG && !f.pieceG.value) { f.pieceG.value = got.pieceG; f.piece.value = got.piece; }
       found = got.src; src.textContent = `Per 100 g · ${got.src} (edit if your package says otherwise)`;
     };
-    d.querySelector("#look").onclick = look;
+    d.querySelector("#look")?.addEventListener("click", look);
     f.name.addEventListener("change", () => { if (!f.kcal.value) look(); });
     f.onsubmit = e => {
       e.preventDefault();
       const pg = num(f.pieceG.value), one = f.piece.value.trim() || "piece";
       const v = { name: f.name.value.trim(), kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value), src: found || "entered manually",
         pieceG: pg || 0, piece: pg ? one : "", pieces: pg ? (/(s|x|ch|sh)$/.test(one) ? one + "es" : /o$/.test(one) ? one + "es" : one + "s") : "" };
-      if (id) Object.assign(i, v); else state.ingredients.push({ id: uid(), ...v });
+      // A new food with the same name as a saved one updates it (e.g. scanning a pack you already had).
+      const target = id ? i : ingByName(v.name);
+      let saved = target; if (target) Object.assign(target, v); else state.ingredients.push(saved = { id: uid(), ...v });
       save(); closeDlg(); render();
+      afterSave && afterSave(saved);
     };
   });
 }
@@ -1332,6 +1380,7 @@ const actions = {
   logRecipe: v => { ui.tab = "today"; entryDialog("Lunch", v); },
   delEntry: v => { state.log[ui.date] = dayEntries(ui.date).filter(e => e.id !== v); save(); },
   editIng: v => ingDialog(v),
+  scanIng: () => scanLabel(),
   delIng: async v => {
     const used = state.recipes.filter(rc => rc.items.some(it => it.ingId === v)).map(rc => rc.name);
     if (!await ask(used.length ? `Used in: ${used.join(", ")}. Delete anyway? It will count as 0 in those recipes.` : "Delete this ingredient?")) return;
