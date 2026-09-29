@@ -72,6 +72,192 @@ const dayEntries = d => state.log[d] || [];
 const dayTotal = d => dayEntries(d).reduce((t, e) => add(t, e), ZERO());
 const macroLine = m => `<span>${r(m.kcal)} kcal</span> · <span class="dot-p">P ${r(m.p, 1)}</span> <span class="dot-c">C ${r(m.c, 1)}</span> <span class="dot-f">F ${r(m.f, 1)}</span>`;
 
+// ---------- nutrition lookup ----------
+// Typical values per 100 g (raw unless stated), averaged from common food tables.
+// [name, kcal, protein, carbs, fat, aliases]
+const FOODS = [
+  ["Chicken breast", 120, 22.5, 0, 2.6, "chicken,chicken fillet,kureci prsa"],
+  ["Chicken thigh (skinless)", 121, 19.7, 0, 4.1, "chicken thighs"],
+  ["Beef mince", 254, 17.2, 0, 20, "ground beef,minced beef,hovezi mlete maso"],
+  ["Lean beef mince", 176, 20, 0, 10, "lean ground beef,extra lean beef mince"],
+  ["Beef steak", 158, 21, 0, 8, "steak,beef"],
+  ["Pork mince", 263, 16.9, 0, 21.2, "ground pork,minced pork,veprove mlete maso"],
+  ["Mixed mince (pork & beef)", 250, 17, 0, 20, "mixed mince,mlete maso"],
+  ["Pork loin", 143, 21, 0, 5.9, "pork,pork chop,veprova panenka,vepr"],
+  ["Turkey breast", 114, 23.7, 0, 1.5, "turkey,kruti prsa"],
+  ["Bacon", 417, 12.6, 1.4, 40, "slanina"],
+  ["Ham", 145, 21, 1.5, 6, "sunka"],
+  ["Chorizo", 455, 24, 2, 38, ""],
+  ["Sausage", 300, 12, 3, 27, "sausages,klobasa,parek"],
+  ["Salmon", 208, 20, 0, 13, "losos"],
+  ["Tuna (canned in water)", 116, 25.5, 0, 0.8, "tuna,tuna in water,tunak"],
+  ["Cod", 82, 17.8, 0, 0.7, "white fish,treska"],
+  ["Shrimp", 85, 20, 0, 0.5, "prawns,prawn,krevety"],
+  ["Egg", 143, 12.6, 0.7, 9.5, "eggs,whole egg,vejce,vajicko"],
+  ["Egg white", 52, 10.9, 0.7, 0.2, "egg whites,bilek"],
+  ["Whole milk", 61, 3.2, 4.8, 3.3, "milk,full fat milk,mleko"],
+  ["Semi-skimmed milk", 46, 3.4, 4.8, 1.5, "semi skimmed milk,1.5% milk,polotucne mleko"],
+  ["Skimmed milk", 34, 3.4, 5, 0.1, "skim milk,odtucnene mleko"],
+  ["Oat milk", 46, 1, 6.7, 1.5, "oat drink,ovesne mleko"],
+  ["Almond milk (unsweetened)", 15, 0.5, 0.3, 1.2, "almond milk,almond drink,mandlove mleko"],
+  ["Soy milk", 43, 3.3, 2.5, 1.8, "soya milk,soy drink,sojove mleko"],
+  ["Plain yogurt", 61, 3.5, 4.7, 3.3, "yogurt,yoghurt,natural yogurt,bily jogurt,jogurt"],
+  ["Greek yogurt (0% fat)", 59, 10.2, 3.6, 0.4, "fat free greek yogurt,0% greek yogurt"],
+  ["Greek yogurt", 97, 9, 4, 5, "greek yoghurt,recky jogurt"],
+  ["Skyr", 63, 11, 4, 0.2, ""],
+  ["Cottage cheese", 98, 11.1, 3.4, 4.3, "cottage"],
+  ["Quark (low fat)", 70, 12, 4, 0.3, "quark,tvaroh,netucny tvaroh"],
+  ["Cheddar", 403, 24.9, 1.3, 33.1, "cheese,hard cheese,syr,eidam,gouda"],
+  ["Mozzarella", 254, 18, 2.2, 19, ""],
+  ["Parmesan", 431, 38, 4.1, 29, "parmigiano,grana padano"],
+  ["Feta", 264, 14, 4, 21, "feta cheese,balkansky syr"],
+  ["Cream cheese", 342, 6, 4, 34, "philadelphia,cream cheese spread,lucina"],
+  ["Butter", 717, 0.9, 0.1, 81, "maslo"],
+  ["Double cream", 340, 2.8, 2.7, 36, "heavy cream,whipping cream,cream,smetana ke slehani"],
+  ["Sour cream", 198, 2.4, 4.6, 19, "zakysana smetana"],
+  ["Coconut milk (canned)", 200, 2, 3, 21, "coconut milk,kokosove mleko"],
+  ["White rice (dry)", 360, 6.6, 79, 0.6, "rice,white rice,basmati rice,jasmine rice,ryze"],
+  ["White rice (cooked)", 130, 2.7, 28, 0.3, "cooked rice,boiled rice,varena ryze"],
+  ["Brown rice (dry)", 367, 7.5, 76, 2.7, "brown rice"],
+  ["Pasta (dry)", 371, 13, 75, 1.5, "pasta,spaghetti,penne,fusilli,macaroni,noodles,testoviny,spagety"],
+  ["Pasta (cooked)", 158, 5.8, 31, 0.9, "cooked pasta,cooked spaghetti"],
+  ["Oats", 389, 16.9, 66, 6.9, "rolled oats,porridge oats,oatmeal,ovesne vlocky,vlocky"],
+  ["Granola", 471, 10, 64, 20, "muesli,musli"],
+  ["Cornflakes", 357, 7.5, 84, 0.4, "corn flakes,cereal"],
+  ["White bread", 265, 9, 49, 3.2, "bread,toast,toast bread,chleba,chleb,rohlik"],
+  ["Wholemeal bread", 247, 13, 41, 3.4, "whole wheat bread,wholegrain bread,brown bread,celozrnny chleb"],
+  ["Rye bread", 259, 8.5, 48, 3.3, "zitny chleb"],
+  ["Tortilla wrap", 310, 8, 52, 8, "tortilla,wrap,tortillas,wraps"],
+  ["Wheat flour", 364, 10, 76, 1, "flour,plain flour,all purpose flour,mouka,hladka mouka"],
+  ["Couscous (dry)", 376, 12.8, 77, 0.6, "couscous,kuskus"],
+  ["Quinoa (dry)", 368, 14, 64, 6, "quinoa"],
+  ["Potatoes", 77, 2, 17, 0.1, "potato,brambory,brambora"],
+  ["Sweet potato", 86, 1.6, 20, 0.1, "sweet potatoes,batat,bataty"],
+  ["Kidney beans (canned, drained)", 100, 7, 14.5, 0.5, "kidney beans,red kidney beans,red beans,fazole,cervene fazole"],
+  ["Black beans (canned, drained)", 91, 6, 16, 0.3, "black beans"],
+  ["Chickpeas (canned, drained)", 139, 7, 22, 2.6, "chickpeas,garbanzo beans,cizrna"],
+  ["Lentils (dry)", 352, 24.6, 63, 1.1, "lentils,red lentils,cocka"],
+  ["Lentils (cooked)", 116, 9, 20, 0.4, "cooked lentils"],
+  ["Baked beans", 80, 4.7, 13, 0.4, ""],
+  ["Tofu", 144, 17, 3, 9, "firm tofu"],
+  ["Hummus", 166, 7.9, 14, 9.6, "houmous"],
+  ["Onion", 40, 1.1, 9.3, 0.1, "onions,red onion,cibule"],
+  ["Garlic", 149, 6.4, 33, 0.5, "garlic clove,garlic cloves,cesnek"],
+  ["Tomato", 18, 0.9, 3.9, 0.2, "tomatoes,cherry tomatoes,rajce,rajcata"],
+  ["Chopped tomatoes (canned)", 22, 1.1, 3.5, 0.2, "canned tomatoes,tinned tomatoes,passata,tomato sauce,sekana rajcata,loupana rajcata"],
+  ["Tomato paste", 82, 4.3, 19, 0.5, "tomato puree,rajcatovy protlak,protlak"],
+  ["Bell pepper", 31, 1, 6, 0.3, "pepper,peppers,red pepper,green pepper,paprika,paprika zelenina"],
+  ["Chili pepper", 40, 1.9, 8.8, 0.4, "chili,chilli,chillies,jalapeno,chilli pepper"],
+  ["Carrot", 41, 0.9, 9.6, 0.2, "carrots,mrkev"],
+  ["Broccoli", 34, 2.8, 7, 0.4, "brokolice"],
+  ["Cauliflower", 25, 1.9, 5, 0.3, "kvetak"],
+  ["Spinach", 23, 2.9, 3.6, 0.4, "spenat"],
+  ["Cucumber", 15, 0.7, 3.6, 0.1, "okurka"],
+  ["Lettuce", 15, 1.4, 2.9, 0.2, "salad,salad leaves,salat"],
+  ["Zucchini", 17, 1.2, 3.1, 0.3, "courgette,cuketa"],
+  ["Mushrooms", 22, 3.1, 3.3, 0.3, "mushroom,champignons,houby,zampiony"],
+  ["Sweetcorn", 86, 3.3, 19, 1.2, "corn,kukurice"],
+  ["Peas", 81, 5.4, 14, 0.4, "green peas,frozen peas,hrasek"],
+  ["Green beans", 31, 1.8, 7, 0.2, "string beans,zelene fazolky"],
+  ["Cabbage", 25, 1.3, 5.8, 0.1, "zeli"],
+  ["Celery", 16, 0.7, 3, 0.2, "celer"],
+  ["Avocado", 160, 2, 8.5, 14.7, "avokado"],
+  ["Banana", 89, 1.1, 22.8, 0.3, "bananas,banan"],
+  ["Apple", 52, 0.3, 13.8, 0.2, "apples,jablko"],
+  ["Orange", 47, 0.9, 11.8, 0.1, "oranges,pomeranc"],
+  ["Pear", 57, 0.4, 15, 0.1, "hruska"],
+  ["Grapes", 69, 0.7, 18, 0.2, "hroznove vino"],
+  ["Strawberries", 32, 0.7, 7.7, 0.3, "strawberry,jahody"],
+  ["Blueberries", 57, 0.7, 14.5, 0.3, "blueberry,boruvky"],
+  ["Raspberries", 52, 1.2, 12, 0.7, "raspberry,maliny"],
+  ["Frozen berries", 50, 1, 11, 0.4, "mixed berries,berries,lesni ovoce"],
+  ["Raisins", 299, 3.1, 79, 0.5, "rozinky"],
+  ["Lemon juice", 22, 0.4, 6.9, 0.2, "lemon,lime juice,citron"],
+  ["Olive oil", 884, 0, 0, 100, "extra virgin olive oil,olivovy olej"],
+  ["Vegetable oil", 884, 0, 0, 100, "oil,sunflower oil,rapeseed oil,canola oil,olej,slunecnicovy olej,repkovy olej"],
+  ["Coconut oil", 862, 0, 0, 100, "kokosovy olej"],
+  ["Almonds", 579, 21, 22, 50, "almond,mandle"],
+  ["Walnuts", 654, 15, 14, 65, "walnut,vlasske orechy"],
+  ["Peanuts", 567, 26, 16, 49, "peanut,arasidy"],
+  ["Cashews", 553, 18, 30, 44, "cashew,kesu"],
+  ["Mixed nuts", 607, 20, 21, 54, "nuts,orechy"],
+  ["Peanut butter", 588, 25, 20, 50, "arasidove maslo"],
+  ["Chia seeds", 486, 17, 42, 31, "chia"],
+  ["Flax seeds", 534, 18, 29, 42, "linseed,flaxseed,lnene seminko"],
+  ["Sunflower seeds", 584, 21, 20, 51, "slunecnicova seminka"],
+  ["Sugar", 387, 0, 100, 0, "white sugar,brown sugar,cukr"],
+  ["Honey", 304, 0.3, 82, 0, "med"],
+  ["Maple syrup", 260, 0, 67, 0.1, "javorovy sirup"],
+  ["Jam", 260, 0.4, 65, 0.1, "jelly,marmalade,dzem,marmelada"],
+  ["Dark chocolate", 546, 4.9, 61, 31, "chocolate,horka cokolada"],
+  ["Milk chocolate", 535, 7.7, 59, 30, "mlecna cokolada"],
+  ["Cocoa powder", 228, 19.6, 58, 13.7, "cocoa,kakao"],
+  ["Whey protein", 400, 80, 8, 6, "protein powder,whey,protein,syrovatkovy protein"],
+  ["Ketchup", 101, 1, 27, 0.1, "kecup"],
+  ["Mayonnaise", 680, 1, 0.6, 75, "mayo,majoneza,majonez"],
+  ["Mustard", 66, 4, 6, 3.3, "horcice"],
+  ["Soy sauce", 53, 8, 4.9, 0.6, "sojova omacka"],
+  ["Stock (prepared)", 7, 1, 0.5, 0.2, "broth,stock,bouillon,vyvar"],
+  ["Stock cube", 250, 10, 20, 15, "bouillon cube,buljon,kostka"],
+  ["Red wine", 85, 0.1, 2.6, 0, "wine,cervene vino"],
+  ["Beer", 43, 0.5, 3.6, 0, "pivo"],
+  ["Spices", 0, 0, 0, 0, "salt,black pepper,cumin,paprika powder,oregano,herbs,sul,pepr,kmin,koreni,chili powder,cinnamon,skorice"],
+];
+const norm = s => String(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9% ]/g, " ").trim().split(/\s+/).filter(Boolean)
+  .map(w => w.length > 4 ? w.replace(/(oes|es|s)$/, m => m === "oes" ? "o" : "") : w);
+const FOOD_INDEX = FOODS.map(([name, kcal, p, c, f, al]) => ({ name, kcal, p, c, f, keys: [name, ...al.split(",").filter(Boolean)].map(norm) }));
+
+// Best built-in match for what the user typed, or null.
+function findFood(query) {
+  const q = norm(query); if (!q.length) return null;
+  let best = null, bestScore = 0;
+  for (const food of FOOD_INDEX) for (const k of food.keys) {
+    let s = 0;
+    if (k.join(" ") === q.join(" ")) s = 100;
+    else if (q.every(w => k.includes(w))) s = 60 - (k.length - q.length);          // "chicken" -> "chicken breast"
+    else if (k.every(w => q.includes(w))) s = 40 - (q.length - k.length) + k.length; // "diced onion" -> "onion"
+    if (s > bestScore) { bestScore = s; best = food; }
+  }
+  return best && { ...best, strong: bestScore >= 50 };
+}
+
+// Median per-100g values across matching products on Open Food Facts.
+async function lookupOnline(query) {
+  const url = "https://world.openfoodfacts.org/cgi/search.pl?search_simple=1&action=process&json=1&page_size=30&fields=product_name,nutriments&search_terms=" + encodeURIComponent(query);
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 12000);
+  try {
+    const res = await fetch(url, { signal: ctl.signal });
+    if (!res.ok) return null;
+    const vals = ((await res.json()).products || []).map(pr => {
+      const n = pr.nutriments || {};
+      const kcal = n["energy-kcal_100g"] ?? (n.energy_100g != null ? n.energy_100g / 4.184 : null);
+      const v = { kcal, p: n.proteins_100g, c: n.carbohydrates_100g, f: n.fat_100g };
+      return Object.values(v).every(x => typeof x === "number" && isFinite(x) && x >= 0) && v.kcal <= 950 ? v : null;
+    }).filter(Boolean);
+    if (!vals.length) return null;
+    const med = k => { const a = vals.map(v => v[k]).sort((x, y) => x - y), m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+    const rd = n => Math.round(n * 10) / 10;
+    return { kcal: Math.round(med("kcal")), p: rd(med("p")), c: rd(med("c")), f: rd(med("f")), src: `online, median of ${vals.length} products` };
+  } catch { return null; } finally { clearTimeout(timer); }
+}
+
+const ingByName = name => { const k = norm(name).join(" "); return state.ingredients.find(i => norm(i.name).join(" ") === k); };
+
+// Nutrition for a typed name: your saved ingredient, else built-in table, else online average.
+async function resolveFood(name, skipOwn = false) {
+  const own = !skipOwn && ingByName(name); if (own) return { ...own, src: own.src || "your ingredient" };
+  const b = findFood(name), fromTable = b && { name: b.name, kcal: b.kcal, p: b.p, c: b.c, f: b.f, src: `typical values for ${b.name}` };
+  if (b?.strong) return fromTable;
+  // Only a loose match (e.g. "almond milk" ~ "milk"): prefer the online average, fall back to the table.
+  const o = await lookupOnline(name); return o ? { name: name.trim(), ...o } : fromTable;
+}
+function ensureIngredient(name, n) {
+  const own = ingByName(name) || ingByName(n.name); if (own) return own.id;
+  const i = { id: uid(), name: n.name || name.trim(), kcal: n.kcal, p: n.p, c: n.c, f: n.f, src: n.src };
+  state.ingredients.push(i); return i.id;
+}
+const foodDatalist = () => `<datalist id="foods">${[...new Set([...state.ingredients.map(i => i.name), ...FOODS.map(x => x[0])])].map(n => `<option value="${esc(n)}">`).join("")}</datalist>`;
+
 // ---------- dialog helper ----------
 const dlg = document.getElementById("dlg");
 function openDlg(html, onOpen) { dlg.innerHTML = html; dlg.showModal(); onOpen && onOpen(dlg); }
@@ -114,7 +300,7 @@ function viewToday() {
 function viewRecipes() {
   const list = [...state.recipes].sort((a, b) => (b.fav || 0) - (a.fav || 0) || a.name.localeCompare(b.name));
   return `<div class="row between"><h2>Recipes</h2><button class="primary" data-act="editRecipe">+ New</button></div>
-  ${list.length ? "" : `<p class="muted">No recipes yet. Add your ingredients first, then build a recipe, e.g. "Chili con carne" with 4 servings.</p>`}
+  ${list.length ? "" : `<p class="muted">No recipes yet. Tap + New, type what went in (e.g. "beef mince 500", "onion 150", "kidney beans 400") and how many servings it made — the macros are calculated for you.</p>`}
   ${list.map(rc => { const t = recipeTotal(rc), s = perServing(rc); return `<div class="card">
     <div class="row between"><b>${rc.fav ? "★ " : ""}${esc(rc.name)}</b><span class="muted">${rc.servings} serving${rc.servings == 1 ? "" : "s"}</span></div>
     <div class="muted">Per serving: ${macroLine(s)}</div><div class="muted">Whole batch: ${r(t.kcal)} kcal</div>
@@ -128,8 +314,8 @@ function viewRecipes() {
 function viewIngredients() {
   const list = [...state.ingredients].sort((a, b) => a.name.localeCompare(b.name));
   return `<div class="row between"><h2>Ingredients</h2><button class="primary" data-act="editIng">+ New</button></div>
-  <p class="muted">Values are per 100 g (or 100 ml).</p>
-  <div class="card">${list.length ? list.map(i => `<div class="item"><div><div>${esc(i.name)}</div><div class="muted">per 100g: ${macroLine(i)}</div></div>
+  <p class="muted">Values are per 100 g (or 100 ml). Ingredients you type into recipes are added here automatically — edit any of them to match your package label.</p>
+  <div class="card">${list.length ? list.map(i => `<div class="item"><div><div>${esc(i.name)}</div><div class="muted">per 100g: ${macroLine(i)}</div>${i.src ? `<div class="muted">${esc(i.src)}</div>` : ""}</div>
     <div class="row"><button class="small" data-act="editIng" data-v="${i.id}">Edit</button><button class="small danger" data-act="delIng" data-v="${i.id}">✕</button></div></div>`).join("") : `<span class="muted">Nothing here yet.</span>`}</div>`;
 }
 
@@ -158,17 +344,23 @@ function entryDialog(meal, preRecipe) {
     const draw = () => {
       const t = f.type.value;
       fields.innerHTML = t === "recipe" ? (state.recipes.length ? `<label>Recipe</label><select name="ref">${opts(state.recipes)}</select><label>Servings eaten</label><input name="amt" inputmode="decimal" value="1">` : `<p class="muted">No recipes yet.</p>`)
-        : t === "ingredient" ? (state.ingredients.length ? `<label>Ingredient</label><select name="ref">${opts(state.ingredients)}</select><label>Grams</label><input name="amt" inputmode="decimal" value="100">` : `<p class="muted">No ingredients yet.</p>`)
+        : t === "ingredient" ? `${foodDatalist()}<label>Food</label><input list="foods" name="food" placeholder="e.g. banana"><label>Grams</label><input name="amt" inputmode="decimal" value="100"><p class="muted" id="fst"></p>`
         : `<label>Name</label><input name="name" value="Quick add"><div class="grid"><div><label>kcal</label><input name="kcal" inputmode="decimal"></div><div><label>Protein</label><input name="p" inputmode="decimal"></div><div><label>Carbs</label><input name="c" inputmode="decimal"></div></div><label>Fat</label><input name="f" inputmode="decimal">`;
       if (preRecipe && t === "recipe" && f.ref) f.ref.value = preRecipe;
     };
     f.type.onchange = draw; draw();
     d.querySelectorAll("[data-fav]").forEach(b => b.onclick = () => { f.type.value = "recipe"; draw(); f.ref.value = b.dataset.fav; f.amt.focus(); });
-    f.onsubmit = e => {
+    f.onsubmit = async e => {
       e.preventDefault();
       const t = f.type.value; let e2;
       if (t === "recipe") { const rc = state.recipes.find(x => x.id === f.ref?.value); if (!rc) return; const a = num(f.amt.value) || 1; e2 = { name: rc.name, amount: `${r(a, 2)} serving${a == 1 ? "" : "s"}`, ...add(ZERO(), perServing(rc), a) }; }
-      else if (t === "ingredient") { const i = ing(f.ref?.value); if (!i) return; const g = num(f.amt.value); e2 = { name: i.name, amount: `${r(g)} g`, ...add(ZERO(), i, g / 100) }; }
+      else if (t === "ingredient") {
+        const q = f.food.value.trim(), st = d.querySelector("#fst"); if (!q) return;
+        st.textContent = "Looking up…";
+        const n = await resolveFood(q);
+        if (!n) { st.textContent = "Couldn't find that — try another name or use Quick add."; return; }
+        const i = ing(ensureIngredient(q, n)), g = num(f.amt.value); e2 = { name: i.name, amount: `${r(g)} g`, ...add(ZERO(), i, g / 100) };
+      }
       else e2 = { name: f.name.value.trim() || "Quick add", amount: "", kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value) };
       (state.log[ui.date] ||= []).push({ id: uid(), meal: f.meal.value, ...e2 });
       save(); closeDlg(); render();
@@ -178,15 +370,27 @@ function entryDialog(meal, preRecipe) {
 
 function ingDialog(id) {
   const i = id ? ing(id) : { name: "", kcal: "", p: "", c: "", f: "" };
-  openDlg(`<h3>${id ? "Edit" : "New"} ingredient</h3><form id="f"><label>Name</label><input name="name" value="${esc(i.name)}" required>
-  <p class="muted">Per 100 g</p><div class="grid"><div><label>kcal</label><input name="kcal" inputmode="decimal" value="${i.kcal}"></div>
+  openDlg(`<h3>${id ? "Edit" : "New"} ingredient</h3><form id="f">${foodDatalist()}<label>Name</label>
+  <div class="row"><input list="foods" name="name" value="${esc(i.name)}" class="grow" required><button type="button" id="look">Look up</button></div>
+  <p class="muted" id="src">Per 100 g${i.src ? ` · ${esc(i.src)}` : " · type a name and the values fill in automatically"}</p><div class="grid"><div><label>kcal</label><input name="kcal" inputmode="decimal" value="${i.kcal}"></div>
   <div><label>Protein</label><input name="p" inputmode="decimal" value="${i.p}"></div><div><label>Carbs</label><input name="c" inputmode="decimal" value="${i.c}"></div></div>
   <label>Fat</label><input name="f" inputmode="decimal" value="${i.f}">
   <div class="row" style="margin-top:12px"><button type="button" class="grow" data-close>Cancel</button><button class="primary grow">Save</button></div></form>`, d => {
-    const f = d.querySelector("#f");
+    const f = d.querySelector("#f"), src = d.querySelector("#src");
+    let found = i.src || "";
+    const look = async () => {
+      const q = f.name.value.trim(); if (!q) return;
+      src.textContent = "Looking up…";
+      const got = await resolveFood(q, true);
+      if (!got) { src.textContent = "Per 100 g · not found, enter the values yourself"; return; }
+      ["kcal", "p", "c", "f"].forEach(k => f[k].value = got[k]);
+      found = got.src; src.textContent = `Per 100 g · ${got.src} (edit if your package says otherwise)`;
+    };
+    d.querySelector("#look").onclick = look;
+    f.name.addEventListener("change", () => { if (!f.kcal.value) look(); });
     f.onsubmit = e => {
       e.preventDefault();
-      const v = { name: f.name.value.trim(), kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value) };
+      const v = { name: f.name.value.trim(), kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value), src: found || "entered manually" };
       if (id) Object.assign(i, v); else state.ingredients.push({ id: uid(), ...v });
       save(); closeDlg(); render();
     };
@@ -194,34 +398,60 @@ function ingDialog(id) {
 }
 
 function recipeDialog(id) {
-  if (!state.ingredients.length) { alert("Add some ingredients first."); return; }
-  const rc = id ? structuredClone(state.recipes.find(x => x.id === id)) : { id: uid(), name: "", servings: 1, fav: false, items: [{ ingId: state.ingredients[0].id, grams: 100 }] };
-  const opts = sel => [...state.ingredients].sort((a, b) => a.name.localeCompare(b.name)).map(x => `<option value="${x.id}" ${x.id === sel ? "selected" : ""}>${esc(x.name)}</option>`).join("");
-  openDlg(`<h3>${id ? "Edit" : "New"} recipe</h3><form id="f"><label>Name</label><input name="name" value="${esc(rc.name)}" required>
+  const orig = id && state.recipes.find(x => x.id === id);
+  const rc = orig ? structuredClone(orig) : { id: uid(), name: "", servings: 1, fav: false, items: [] };
+  // Each row: typed name, grams, resolved nutrition per 100 g (n) and a status line.
+  const rows = rc.items.map(it => { const i = ing(it.ingId); return { name: i ? i.name : "", grams: it.grams, n: i || null, status: i ? (i.src || "your ingredient") : "" }; });
+  if (!rows.length) rows.push({ name: "", grams: "", n: null, status: "" }, { name: "", grams: "", n: null, status: "" });
+  openDlg(`<h3>${id ? "Edit" : "New"} recipe</h3><form id="f">${foodDatalist()}<label>Name</label><input name="name" value="${esc(rc.name)}" placeholder="e.g. Chili con carne" required>
   <label>Servings the batch makes</label><input name="servings" inputmode="decimal" value="${rc.servings}">
-  <label>Ingredients (grams of each, for the whole batch)</label><div id="items"></div>
+  <label>Ingredients — just type the name and grams for the whole batch</label><div id="items"></div>
   <button type="button" class="small" id="addRow" style="margin-top:6px">+ Ingredient</button>
   <div class="card" style="margin-top:12px" id="sum"></div>
+  <p class="muted" id="err" style="color:var(--danger)"></p>
   <div class="row"><button type="button" class="grow" data-close>Cancel</button><button class="primary grow">Save</button></div></form>`, d => {
     const f = d.querySelector("#f"), box = d.querySelector("#items");
+    const total = () => rows.reduce((t, x) => x.n ? add(t, x.n, num(x.grams) / 100) : t, ZERO());
     const sum = () => {
-      rc.servings = num(f.servings.value) || 1;
-      const t = recipeTotal(rc);
-      d.querySelector("#sum").innerHTML = `<div class="muted">Whole batch</div>${macroLine(t)}<div class="muted" style="margin-top:6px">Per serving</div><b>${macroLine(add(ZERO(), t, 1 / rc.servings))}</b>`;
+      const t = total(), sv = num(f.servings.value) || 1;
+      d.querySelector("#sum").innerHTML = `<div class="muted">Whole batch</div>${macroLine(t)}<div class="muted" style="margin-top:6px">Per serving (1 of ${r(sv, 2)})</div><b>${macroLine(add(ZERO(), t, 1 / sv))}</b>`;
     };
-    const rows = () => {
-      box.innerHTML = rc.items.map((it, k) => `<div class="row" style="margin-bottom:6px"><select data-k="${k}" data-f="ingId" class="grow">${opts(it.ingId)}</select>
-        <input data-k="${k}" data-f="grams" inputmode="decimal" value="${it.grams}" style="width:80px"><button type="button" class="small danger" data-rm="${k}">✕</button></div>`).join("");
+    const statusHtml = x => x.status ? `<div class="muted" style="margin:-2px 0 8px">${x.n ? `${esc(x.status)} · ${r(x.n.kcal)} kcal, P ${r(x.n.p, 1)} C ${r(x.n.c, 1)} F ${r(x.n.f, 1)} per 100 g` : esc(x.status)}</div>` : "";
+    const draw = () => {
+      box.innerHTML = rows.map((x, k) => `<div class="row" style="margin-bottom:4px"><input list="foods" data-k="${k}" data-f="name" value="${esc(x.name)}" placeholder="e.g. beef mince" class="grow">
+        <input data-k="${k}" data-f="grams" inputmode="decimal" value="${x.grams}" placeholder="g" style="width:72px"><button type="button" class="small danger" data-rm="${k}">✕</button></div><div data-st="${k}">${statusHtml(x)}</div>`).join("");
       sum();
     };
-    box.oninput = box.onchange = e => { const k = e.target.dataset.k; if (k == null) return; rc.items[k][e.target.dataset.f] = e.target.dataset.f === "grams" ? num(e.target.value) : e.target.value; sum(); };
-    box.onclick = e => { if (e.target.dataset.rm != null) { rc.items.splice(e.target.dataset.rm, 1); rows(); } };
-    d.querySelector("#addRow").onclick = () => { rc.items.push({ ingId: state.ingredients[0].id, grams: 100 }); rows(); };
+    const lookup = k => (rows[k].pending = doLookup(k));
+    const doLookup = async k => {
+      const x = rows[k], name = x.name.trim();
+      if (!name) { x.n = null; x.status = ""; }
+      else {
+        x.status = "Looking up…"; x.n = null; d.querySelector(`[data-st="${k}"]`).innerHTML = statusHtml(x); sum();
+        const res = await resolveFood(name);
+        if (rows[k] !== x || x.name.trim() !== name) return; // edited meanwhile
+        x.n = res; x.status = res ? res.src : "Not found — try another name, or add it on the Ingredients tab";
+      }
+      const st = d.querySelector(`[data-st="${k}"]`); if (st) st.innerHTML = statusHtml(x); sum();
+    };
+    box.addEventListener("input", e => { const k = e.target.dataset.k; if (k == null) return; rows[k][e.target.dataset.f] = e.target.value; if (e.target.dataset.f === "grams") sum(); });
+    box.addEventListener("change", e => { const k = e.target.dataset.k; if (k != null && e.target.dataset.f === "name") lookup(+k); });
+    box.onclick = e => { if (e.target.dataset.rm != null) { rows.splice(e.target.dataset.rm, 1); draw(); } };
+    d.querySelector("#addRow").onclick = () => { rows.push({ name: "", grams: "", n: null, status: "" }); draw(); box.querySelector(`[data-k="${rows.length - 1}"]`).focus(); };
     f.servings.oninput = sum;
-    rows();
-    f.onsubmit = e => {
+    draw();
+    f.onsubmit = async e => {
       e.preventDefault();
+      const err = d.querySelector("#err"), used = rows.filter(x => x.name.trim());
+      // Resolve anything typed but not looked up yet (e.g. Save pressed straight after typing).
+      err.textContent = "";
+      used.forEach(x => { if (!x.n && !x.pending) lookup(rows.indexOf(x)); });
+      await Promise.all(used.map(x => x.pending));
+      const missing = used.filter(x => !x.n).map(x => x.name.trim());
+      if (missing.length) { err.textContent = `Couldn't find: ${missing.join(", ")}. Change the name or add it on the Ingredients tab.`; return; }
+      if (!used.length) { err.textContent = "Add at least one ingredient."; return; }
       rc.name = f.name.value.trim(); rc.servings = num(f.servings.value) || 1;
+      rc.items = used.map(x => ({ ingId: ensureIngredient(x.name, x.n), grams: num(x.grams) }));
       const k = state.recipes.findIndex(x => x.id === rc.id);
       if (k >= 0) state.recipes[k] = rc; else state.recipes.push(rc);
       save(); closeDlg(); render();
