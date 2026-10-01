@@ -959,8 +959,20 @@ function viewIngredients() {
 function viewGoals() {
   const g = state.goals;
   const nFoods = state.ingredients.length;
-  return `<h2>Profile</h2>
+  // Two sections so the page stays short: progress & goals, and everything else.
+  const sec = ui.profTab || "overview";
+  const seg = `<div class="seg" role="tablist" aria-label="Profile sections" style="margin-bottom:14px">${[["overview", "Overview & goals"], ["more", "Foods & settings"]].map(([k, n]) => `<button role="tab" class="${sec === k ? "on" : ""}" data-act="profTab" data-v="${k}" aria-selected="${sec === k}">${n}</button>`).join("")}</div>`;
+  if (sec === "overview") return `<h2>Profile</h2>${seg}
   ${overallCard()}
+  <form class="card" data-form="goals"><h3>Daily goals</h3>
+    <label for="gmode">What counts as hitting your goal</label><select id="gmode" name="mode">${Object.entries(GOAL_MODES).map(([k, v]) => `<option value="${k}" ${(g.mode || "min") === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+    <div class="grid2"><div><label for="gk">Calories (kcal)</label><input id="gk" name="kcal" inputmode="decimal" value="${g.kcal}"></div>
+      <div><label for="gp">Protein (g)</label><input id="gp" name="p" inputmode="decimal" value="${g.p}"></div>
+      <div><label for="gc">Carbs (g)</label><input id="gc" name="c" inputmode="decimal" value="${g.c}"></div>
+      <div><label for="gf">Fat (g)</label><input id="gf" name="f" inputmode="decimal" value="${g.f}"></div></div>
+    <p class="muted" id="gcheck" style="margin-top:10px"></p><button class="primary" style="width:100%">Save goals</button></form>
+`;
+  return `<h2>Profile</h2>${seg}
   <button class="card navcard" data-act="tab" data-v="ingredients"><span><b>My foods</b><span class="muted">${nFoods ? `${nFoods} food${nFoods == 1 ? "" : "s"} with your values and piece sizes` : "Foods you use in recipes appear here"}</span></span>${I.chev}</button>
   <div class="card"><h3>Food preferences</h3><p class="muted">The Assistant uses these when you ask for meal ideas.</p>
     <p class="eyebrow" style="margin-top:14px">I like</p>
@@ -970,13 +982,6 @@ function viewGoals() {
     <p class="eyebrow" style="margin-top:18px">How I cook</p>
     <div class="chips">${PREF_STYLE.map(x => `<button type="button" class="chip${state.prefs.style.includes(x) ? " on" : ""}" data-act="prefChip" data-v="style:${x}" aria-pressed="${state.prefs.style.includes(x)}">${x}</button>`).join("")}</div>
   </div>
-  <form class="card" data-form="goals"><h3>Daily goals</h3>
-    <label for="gmode">What counts as hitting your goal</label><select id="gmode" name="mode">${Object.entries(GOAL_MODES).map(([k, v]) => `<option value="${k}" ${(g.mode || "min") === k ? "selected" : ""}>${v}</option>`).join("")}</select>
-    <div class="grid2"><div><label for="gk">Calories (kcal)</label><input id="gk" name="kcal" inputmode="decimal" value="${g.kcal}"></div>
-      <div><label for="gp">Protein (g)</label><input id="gp" name="p" inputmode="decimal" value="${g.p}"></div>
-      <div><label for="gc">Carbs (g)</label><input id="gc" name="c" inputmode="decimal" value="${g.c}"></div>
-      <div><label for="gf">Fat (g)</label><input id="gf" name="f" inputmode="decimal" value="${g.f}"></div></div>
-    <p class="muted" id="gcheck" style="margin-top:10px"></p><button class="primary" style="width:100%">Save goals</button></form>
   <div class="card"><h3>Backup</h3><p class="muted">${db ? "Your data is saved to your Claude account and syncs across devices. Export a copy now and then as a backup." : "Data lives in this browser only. Export regularly."}</p>
     <div class="row" style="margin-top:12px"><button class="grow" data-act="export">Export</button><button class="grow" data-act="import">Import</button></div></div>`;
 }
@@ -1596,6 +1601,7 @@ function viewChat() {
 const actions = {
   tab: v => { if (v === "goals" && ui.tab !== "goals") ui.statTot = null; ui.tab = v; },
   statRange: v => { ui.statRange = v; },
+  profTab: v => { ui.profTab = v; window.scrollTo(0, 0); },
   date: v => { ui.date = v; },
   addEntry: v => entryDialog(v),
   calendar: () => calendarDialog(),
@@ -1707,7 +1713,7 @@ document.addEventListener("submit", e => {
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
   e.preventDefault();
   state.goals = { kcal: num(f.kcal.value), p: num(f.p.value), c: num(f.c.value), f: num(f.f.value), mode: f.mode.value };
-  save(); ui.tab = "today"; render();
+  save(); render(); toast("Goals saved");
 });
 
 render();
