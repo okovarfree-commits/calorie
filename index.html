@@ -18,7 +18,7 @@
   --p:#3569d4;--c:#c98410;--f:#d9532f;
   --danger:#c4352b;--danger-bg:#fbe6e2;--ok-bg:#dbefe2;--bad-bg:#f9dfd9;
   --shadow:0 1px 2px rgb(21 32 26/.05),0 6px 16px -10px rgb(21 32 26/.16);
-  --nav-bg:rgb(255 255 255/.97);--scrim:rgb(12 20 15/.42);
+  --nav-bg:rgb(255 255 255/.97);--seg-on:#ffffff;--scrim:rgb(12 20 15/.42);
   --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23879187' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10l5 5 5-5'/%3E%3C/svg%3E");
   --display:"Bricolage Grotesque",ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;
@@ -30,7 +30,7 @@
   --accent:#4dc283;--accent-soft:#163323;--on-accent:#06130b;
   --p:#7aa6f5;--c:#eeb54b;--f:#f3876c;
   --danger:#f3876c;--danger-bg:#3b1d18;--ok-bg:#163823;--bad-bg:#40201a;
-  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.97);--scrim:rgb(0 0 0/.6);
+  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.97);--seg-on:#334039;--scrim:rgb(0 0 0/.6);
   --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2306130b' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   color-scheme:dark}}
 :root[data-theme="dark"]{
@@ -38,7 +38,7 @@
   --accent:#4dc283;--accent-soft:#163323;--on-accent:#06130b;
   --p:#7aa6f5;--c:#eeb54b;--f:#f3876c;
   --danger:#f3876c;--danger-bg:#3b1d18;--ok-bg:#163823;--bad-bg:#40201a;
-  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.97);--scrim:rgb(0 0 0/.6);
+  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.97);--seg-on:#334039;--scrim:rgb(0 0 0/.6);
   --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2306130b' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   color-scheme:dark}
 
@@ -207,7 +207,7 @@ nav button.on .ic{background:var(--accent-soft)}
 .wt.good b{color:var(--accent)}.wt.bad b{color:var(--danger)}
 .seg{display:flex;background:var(--field);border-radius:12px;padding:3px;gap:3px;margin-bottom:14px}
 .seg button{flex:1;min-height:36px;border-radius:9px;background:transparent;font-size:.875rem;color:var(--muted)}
-.seg button.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+.seg button.on{background:var(--seg-on);color:var(--text);box-shadow:var(--shadow)}
 .wchart{position:relative;overflow:hidden}
 .wchart svg{display:block;max-width:100%;height:auto;touch-action:pan-y}
 .wchart .grid{stroke:var(--line);stroke-width:1}
@@ -351,6 +351,17 @@ const today = () => { const d = new Date(); return new Date(d - d.getTimezoneOff
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const r = (n, d = 0) => (Math.round(n * 10 ** d) / 10 ** d).toString();
 const num = v => Math.max(0, parseFloat(String(v).replace(",", ".")) || 0);
+
+// Appearance: "system" follows the phone; "light"/"dark" force a theme via data-theme on <html>.
+// Stored per device (a phone and a laptop can differ). The host's own data-theme is restored for "system".
+const THEME_KEY = "calorie-theme", hostTheme = document.documentElement.dataset.theme;
+const getTheme = () => { try { return localStorage.getItem(THEME_KEY) || "system"; } catch { return "system"; } };
+function applyTheme(t) {
+  const root = document.documentElement;
+  if (t === "light" || t === "dark") root.dataset.theme = t;
+  else if (hostTheme) root.dataset.theme = hostTheme; else delete root.dataset.theme;
+}
+applyTheme(getTheme());
 
 let state = load();
 let ui = { tab: "today", date: today() };
@@ -981,7 +992,12 @@ function viewGoals() {
       <div><label for="gf">Fat (g)</label><input id="gf" name="f" inputmode="decimal" value="${g.f}"></div></div>
     <p class="muted" id="gcheck" style="margin-top:10px"></p><button class="primary" style="width:100%">Save goals</button></form>
 `;
+  const theme = getTheme();
   return `<h2>Profile</h2>${seg}
+  <section class="card"><h3>Appearance</h3>
+    <div class="seg" role="radiogroup" aria-label="Theme" style="margin:10px 0 0">${[["system", "System"], ["light", "Light"], ["dark", "Dark"]].map(([k, n]) => `<button role="radio" class="${theme === k ? "on" : ""}" data-act="setTheme" data-v="${k}" aria-checked="${theme === k}">${n}</button>`).join("")}</div>
+    <p class="muted" style="margin:8px 0 0">${theme === "system" ? "Follows your phone's light or dark setting." : `Always ${theme}. Saved on this device.`}</p>
+  </section>
   <button class="card navcard" data-act="tab" data-v="ingredients"><span><b>My foods</b><span class="muted">${nFoods ? `${nFoods} food${nFoods == 1 ? "" : "s"} with your values and piece sizes` : "Foods you use in recipes appear here"}</span></span>${I.chev}</button>
   <div class="card"><h3>Food preferences</h3><p class="muted">The Assistant uses these when you ask for meal ideas.</p>
     <p class="eyebrow" style="margin-top:14px">I like</p>
@@ -1610,6 +1626,7 @@ function viewChat() {
 const actions = {
   tab: v => { if (v === "goals" && ui.tab !== "goals") ui.statTot = null; ui.tab = v; },
   statRange: v => { ui.statRange = v; },
+  setTheme: v => { try { localStorage.setItem(THEME_KEY, v); } catch {} applyTheme(v); },
   profTab: v => { ui.profTab = v; window.scrollTo(0, 0); },
   date: v => { ui.date = v; },
   addEntry: v => entryDialog(v),
