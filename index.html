@@ -215,6 +215,12 @@ nav button.on .ic{background:var(--accent-soft)}
 .wtip b{font:750 .95rem var(--display)}
 .wchart-empty{padding:36px 8px;text-align:center;color:var(--muted);font-size:.9rem}
 
+.ovgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.ov{background:var(--field);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.ov b{font:750 1.35rem/1.2 var(--display);letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ov b small{font-size:.75rem;font-weight:600;color:var(--muted)}
+.ov.p b{color:var(--p)}
+
 /* lists */
 .item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
 .item:first-child,.card>h3+.item,.card>.item:first-of-type{border-top:0}
@@ -811,6 +817,35 @@ const addDays = (d, n) => { const x = new Date(d + "T12:00"); x.setDate(x.getDat
 const niceDate = d => new Date(d + "T12:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 
 // Totals for every logged day (fetched once per calendar opening; days already open here are fresher).
+// ---------- overall summary (Profile) ----------
+// Totals over all logged days in the chosen range; averages use finished days (today is still in progress).
+const STAT_RANGES = [["7", "7 days", 7], ["30", "30 days", 30], ["all", "All time", 0]];
+async function loadStats() {
+  if (ui.statLoading) return; ui.statLoading = true;
+  try { ui.statTot = await allDayTotals(); } catch { ui.statTot = {}; }
+  ui.statLoading = false; if (ui.tab === "goals" && !dlg.open) render();
+}
+function overallCard() {
+  const rng = ui.statRange || "30", seg = `<div class="seg" role="group" aria-label="Summary range" style="margin:10px 0 14px">${STAT_RANGES.map(([k, n]) => `<button class="${rng === k ? "on" : ""}" data-act="statRange" data-v="${k}" aria-pressed="${rng === k}">${n}</button>`).join("")}</div>`;
+  if (!ui.statTot) { loadStats(); return `<section class="card"><h3>Overall</h3>${seg}<p class="muted" style="margin:0">Adding up your days…</p></section>`; }
+  const days = STAT_RANGES.find(x => x[0] === rng)[2], start = days ? addDays(today(), -days + 1) : "";
+  const list = Object.entries(ui.statTot).filter(([d, x]) => x.n > 0 && d <= today() && (!start || d >= start));
+  if (!list.length) return `<section class="card"><h3>Overall</h3>${seg}<p class="muted" style="margin:0">Nothing logged ${days ? `in the last ${days} days` : "yet"}.</p></section>`;
+  const sum = list.reduce((a, [, x]) => add(a, x.t), ZERO()), done = list.filter(([d]) => d < today());
+  const avgSrc = done.length ? done : list, avg = add(ZERO(), avgSrc.reduce((a, [, x]) => add(a, x.t), ZERO()), 1 / avgSrc.length);
+  const hit = done.filter(([, x]) => dayStatus(x.t, x.n) === "hit").length, g = state.goals, big = n => Math.round(n).toLocaleString();
+  const tile = (label, val, unit, sub, cls = "") => `<div class="ov${cls}"><span class="wt-l">${label}</span><b>${val}<small> ${unit}</small></b>${sub ? `<span class="wt-s">${sub}</span>` : ""}</div>`;
+  return `<section class="card"><h3>Overall</h3>${seg}
+    <div class="ovgrid">
+      ${tile("Calories eaten", big(sum.kcal), "kcal", `${list.length} day${list.length == 1 ? "" : "s"} logged`)}
+      ${tile("Protein eaten", big(sum.p), "g", `C ${big(sum.c)} · F ${big(sum.f)} g`, " p")}
+      ${tile("Average a day", big(avg.kcal), "kcal", g.kcal ? `goal ${big(g.kcal)} · ${Math.round(avg.kcal / g.kcal * 100)}%` : "")}
+      ${tile("Protein a day", big(avg.p), "g", g.p ? `goal ${big(g.p)} · ${Math.round(avg.p / g.p * 100)}%` : "", " p")}
+    </div>
+    ${done.length ? `<p class="muted" style="margin:12px 0 0">Calorie goal hit on <b style="color:var(--text)">${hit} of ${done.length}</b> finished day${done.length == 1 ? "" : "s"}. Averages leave out today, which isn't over yet.</p>` : ""}
+  </section>`;
+}
+
 async function allDayTotals() {
   const tot = {};
   if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { const es = x.data().entries || []; tot[x.id] = { t: es.reduce((a, e) => add(a, e), ZERO()), n: es.length }; }); } catch {}
@@ -925,6 +960,7 @@ function viewGoals() {
   const g = state.goals;
   const nFoods = state.ingredients.length;
   return `<h2>Profile</h2>
+  ${overallCard()}
   <button class="card navcard" data-act="tab" data-v="ingredients"><span><b>My foods</b><span class="muted">${nFoods ? `${nFoods} food${nFoods == 1 ? "" : "s"} with your values and piece sizes` : "Foods you use in recipes appear here"}</span></span>${I.chev}</button>
   <div class="card"><h3>Food preferences</h3><p class="muted">The Assistant uses these when you ask for meal ideas.</p>
     <p class="eyebrow" style="margin-top:14px">I like</p>
@@ -1558,7 +1594,8 @@ function viewChat() {
 
 // ---------- events ----------
 const actions = {
-  tab: v => { ui.tab = v; },
+  tab: v => { if (v === "goals" && ui.tab !== "goals") ui.statTot = null; ui.tab = v; },
+  statRange: v => { ui.statRange = v; },
   date: v => { ui.date = v; },
   addEntry: v => entryDialog(v),
   calendar: () => calendarDialog(),
