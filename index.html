@@ -17,7 +17,7 @@
   --p:#3569d4;--c:#c98410;--f:#d9532f;
   --danger:#c4352b;--danger-bg:#fbe6e2;--ok-bg:#dbefe2;--bad-bg:#f9dfd9;
   --shadow:0 1px 2px rgb(21 32 26/.05),0 8px 24px -12px rgb(21 32 26/.16);
-  --nav-bg:rgb(255 255 255/.84);--scrim:rgb(12 20 15/.42);
+  --nav-bg:rgb(255 255 255/.97);--scrim:rgb(12 20 15/.42);
   --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23879187' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10l5 5 5-5'/%3E%3C/svg%3E");
   --display:"Bricolage Grotesque",ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;
@@ -29,7 +29,7 @@
   --accent:#4dc283;--accent-soft:#163323;--on-accent:#06130b;
   --p:#7aa6f5;--c:#eeb54b;--f:#f3876c;
   --danger:#f3876c;--danger-bg:#3b1d18;--ok-bg:#163823;--bad-bg:#40201a;
-  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.86);--scrim:rgb(0 0 0/.6);
+  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.97);--scrim:rgb(0 0 0/.6);
   --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2306130b' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   color-scheme:dark}}
 :root[data-theme="dark"]{
@@ -37,7 +37,7 @@
   --accent:#4dc283;--accent-soft:#163323;--on-accent:#06130b;
   --p:#7aa6f5;--c:#eeb54b;--f:#f3876c;
   --danger:#f3876c;--danger-bg:#3b1d18;--ok-bg:#163823;--bad-bg:#40201a;
-  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.86);--scrim:rgb(0 0 0/.6);
+  --shadow:0 0 0 1px #1f2823;--nav-bg:rgb(21 28 24/.97);--scrim:rgb(0 0 0/.6);
   --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2306130b' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   color-scheme:dark}
 
@@ -126,8 +126,8 @@ input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none}
 .pill.hit{background:var(--ok-bg);color:var(--accent)}.pill.miss{background:var(--bad-bg);color:var(--danger)}
 
 /* tab bar */
-nav{position:fixed;left:0;right:0;bottom:0;z-index:5;display:flex;justify-content:center;background:var(--nav-bg);
-  -webkit-backdrop-filter:saturate(1.5) blur(16px);backdrop-filter:saturate(1.5) blur(16px);border-top:1px solid var(--line);
+/* No backdrop blur: it re-blurs the page behind the bar on every change and is slow on phone GPUs. */
+nav{position:fixed;left:0;right:0;bottom:0;z-index:5;display:flex;justify-content:center;background:var(--nav-bg);border-top:1px solid var(--line);
   padding:6px 8px calc(6px + env(safe-area-inset-bottom,0px))}
 nav .tabs{display:flex;width:100%;max-width:560px}
 nav button{flex:1;min-width:0;flex-direction:column;gap:3px;background:none;min-height:56px;padding:4px 2px;font-size:.72rem;font-weight:650;color:var(--muted);border-radius:14px}
@@ -355,13 +355,28 @@ function syncStatus(d, e) {
   else if (!pending) syncErr = "";
   const el = document.getElementById("sync"); if (el) { el.textContent = syncErr; el.hidden = !syncErr; }
 }
+// Saving runs just after the screen has updated (so taps feel instant) and a burst of taps is saved once.
+// Only days marked dirty are compared and written, not every day loaded so far.
+const dirtyDays = new Set();
+let saveQueued = false;
+const markDay = d => dirtyDays.add(d);
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
-  if (!db) return;
+  if (saveQueued) return;
+  saveQueued = true;
+  requestAnimationFrame(() => setTimeout(flushSave, 0));
+}
+function flushSave() {
+  if (!saveQueued) return;
+  saveQueued = false;
+  if (!db) { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} return; }
   put("app/settings", settingsBody());
   put("app/shopping", state.shop);
-  for (const d of loadedDays) if (state.log[d]) put("days/" + d, { entries: state.log[d] });
+  for (const d of dirtyDays) if (state.log[d]) put("days/" + d, { entries: state.log[d] });
+  dirtyDays.clear();
 }
+// Don't lose a queued save when the app is closed or sent to the background.
+addEventListener("pagehide", flushSave);
+document.addEventListener("visibilitychange", () => { if (document.hidden) flushSave(); });
 // Live subscriptions: changes made on another device (or by Claude) show up without reloading.
 let unsubDay = null;
 function watchDay(d) {
@@ -369,7 +384,7 @@ function watchDay(d) {
   return new Promise(resolve => {
     unsubDay = db.doc("days/" + d).onSnapshot(snap => {
       const path = "days/" + d, body = snap.exists ? snap.data() : null;
-      if (!snap.metadata.hasPendingWrites && !chainBusy(path)) {
+      if (!snap.metadata.hasPendingWrites && !chainBusy(path) && !dirtyDays.has(d)) {
         const js = body ? canon(body) : null;
         if (js !== synced[path] || !loadedDays.has(d)) {
           if (body) { state.log[d] = structuredClone(body.entries || []); synced[path] = canon({ entries: state.log[d] }); } else if (!loadedDays.has(d)) delete state.log[d];
@@ -411,15 +426,15 @@ async function connect() {
     }
     else {
       // First run in this account: carry over anything saved in this browser.
-      Object.keys(state.log).forEach(d => loadedDays.add(d));
+      Object.keys(state.log).forEach(d => { loadedDays.add(d); markDay(d); });
       save();
     }
     handle.doc("app/settings").onSnapshot(sn => {
-      if (!sn.exists || sn.metadata.hasPendingWrites || chainBusy("app/settings") || canon(sn.data()) === synced["app/settings"]) return;
+      if (!sn.exists || sn.metadata.hasPendingWrites || saveQueued || chainBusy("app/settings") || canon(sn.data()) === synced["app/settings"]) return;
       applySettings(sn.data()); if (!dlg.open && !ui.loading) render();
     }, () => {});
     handle.doc("app/shopping").onSnapshot(sn => {
-      if (!sn.exists || sn.metadata.hasPendingWrites || chainBusy("app/shopping") || canon(sn.data()) === synced["app/shopping"]) return;
+      if (!sn.exists || sn.metadata.hasPendingWrites || saveQueued || chainBusy("app/shopping") || canon(sn.data()) === synced["app/shopping"]) return;
       state.shop = { ...emptyShop(), ...structuredClone(sn.data()) }; synced["app/shopping"] = canon(state.shop);
       if (ui.tab === "shop" && !dlg.open && !ui.loading) render();
     }, () => {});
@@ -452,7 +467,13 @@ function notice(msg) { openDlg(`<p style="font-size:1.05rem;margin:4px 0 0">${es
 // ---------- nutrition math ----------
 const ZERO = () => ({ kcal: 0, p: 0, c: 0, f: 0 });
 const add = (a, b, k = 1) => ({ kcal: a.kcal + b.kcal * k, p: a.p + b.p * k, c: a.c + b.c * k, f: a.f + b.f * k });
-const ing = id => state.ingredients.find(i => i.id === id);
+// id -> ingredient, rebuilt only when the ingredients list changes.
+let ingCache = { arr: null, len: -1, map: null };
+const ing = id => {
+  const a = state.ingredients;
+  if (ingCache.arr !== a || ingCache.len !== a.length) ingCache = { arr: a, len: a.length, map: new Map(a.map(i => [i.id, i])) };
+  return ingCache.map.get(id);
+};
 function recipeTotal(rec) {
   return rec.items.reduce((t, it) => { const i = ing(it.ingId); return i ? add(t, i, itemGrams(it) / 100) : t; }, ZERO());
 }
@@ -612,11 +633,15 @@ const FOOD_INDEX = FOODS.map(([name, kcal, p, c, f, al]) => {
   return { name, kcal, p, c, f, ...(pc && { pieceG: pc[0], piece: pc[1], pieces: pc[2] }), keys: [name, ...al.split(",").filter(Boolean)].map(norm) };
 });
 // Piece size for an ingredient: its own setting, else the built-in one for the same food name.
+const PIECE_BY_NAME = new Map(); // food name -> built-in piece size (or null), memoised
 function pieceOf(i) {
   if (!i) return null;
   if (i.pieceG > 0) return { g: i.pieceG, one: i.piece || "piece", many: i.pieces || (i.piece ? i.piece + "s" : "pieces") };
-  const k = norm(i.name).join(" "), b = FOOD_INDEX.find(x => x.pieceG && x.keys.some(key => key.join(" ") === k));
-  return b ? { g: b.pieceG, one: b.piece, many: b.pieces } : null;
+  const k = i.name, hit = PIECE_BY_NAME.get(k);
+  if (hit !== undefined) return hit;
+  const nk = norm(k).join(" "), b = FOOD_INDEX.find(x => x.pieceG && x.keys.some(key => key.join(" ") === nk));
+  const res = b ? { g: b.pieceG, one: b.piece, many: b.pieces } : null;
+  PIECE_BY_NAME.set(k, res); return res;
 }
 const countLabel = (qty, pc) => `${r(qty, 2)} ${qty == 1 ? pc.one : pc.many}`;
 // Grams of one recipe item (items counted in pieces follow the ingredient's current piece size).
@@ -1033,7 +1058,7 @@ Rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide
 
 function pushEntry(meal, e) {
   const now = new Date(), at = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
-  (state.log[ui.date] ||= []).push({ id: uid(), meal, at, ...e });
+  (state.log[ui.date] ||= []).push({ id: uid(), meal, at, ...e }); markDay(ui.date);
 }
 
 function ingDialog(id, prefill, afterSave) {
@@ -1419,7 +1444,7 @@ const actions = {
   },
   aiExample: v => { ui.chatDraft = v; setTimeout(() => { const t = document.getElementById("chatIn"); t && (t.focus(), t.setSelectionRange(v.length, v.length)); }); },
   logRecipe: v => { ui.tab = "today"; entryDialog("Lunch", v); },
-  delEntry: v => { state.log[ui.date] = dayEntries(ui.date).filter(e => e.id !== v); save(); },
+  delEntry: v => { state.log[ui.date] = dayEntries(ui.date).filter(e => e.id !== v); markDay(ui.date); save(); },
   editIng: v => ingDialog(v),
   scanIng: () => scanLabel(),
   habitDone: v => { const prev = (state.habits ||= {})[v]; state.habits[v] = today(); save(); toast("Creatine done for today", () => { state.habits[v] = prev; save(); render(); }); },
@@ -1451,7 +1476,7 @@ const actions = {
       catch { notice("That file isn't a backup from this app."); return; }
       if (!await ask("Replace your ingredients, recipes and goals with this backup? Days in the backup replace the same days here.", "Replace")) return;
       state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log }, shop: d.shop || state.shop, prefs: { ...emptyPrefs(), ...(d.prefs || state.prefs) } };
-      Object.keys(d.log).forEach(x => loadedDays.add(x)); save(); render();
+      Object.keys(d.log).forEach(x => { loadedDays.add(x); markDay(x); }); save(); render();
     };
     inp.click();
   },
