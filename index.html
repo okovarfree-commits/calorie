@@ -16,7 +16,7 @@
   --accent:#1d7a4c;--accent-soft:#e0f0e6;--on-accent:#fff;
   --p:#3569d4;--c:#c98410;--f:#d9532f;
   --danger:#c4352b;--danger-bg:#fbe6e2;--ok-bg:#dbefe2;--bad-bg:#f9dfd9;
-  --shadow:0 1px 2px rgb(21 32 26/.05),0 8px 24px -12px rgb(21 32 26/.16);
+  --shadow:0 1px 2px rgb(21 32 26/.05),0 6px 16px -10px rgb(21 32 26/.16);
   --nav-bg:rgb(255 255 255/.97);--scrim:rgb(12 20 15/.42);
   --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
   --chev:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23879187' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M7 10l5 5 5-5'/%3E%3C/svg%3E");
@@ -65,6 +65,8 @@ main .sync{margin:10px 0}
 
 /* surfaces */
 .card{background:var(--surface);border-radius:var(--r-card);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
+/* Off-screen cards skip layout and paint until scrolled near (big win on long lists on phones). */
+main>.card,#recList>.card{content-visibility:auto;contain-intrinsic-size:auto 180px}
 .page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0 16px}
 .page-head h2{margin:0}
 .section-gap{margin-top:22px}
@@ -320,7 +322,7 @@ dialog .foot .danger{background:var(--danger-bg)}
   @keyframes sheet{from{transform:translateY(12px) scale(.98);opacity:0}}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
-@media (max-width:360px){.sum{grid-template-columns:1fr;justify-items:center}.macros{width:100%}}
+@media (max-width:374px){.sum{gap:14px}.ring,.ring svg{width:112px;height:112px}.ring .num{font-size:1.7rem}.mrow .hd{font-size:.8rem}}
 </style>
 </head>
 <body>
@@ -510,7 +512,13 @@ const ing = id => {
 function recipeTotal(rec) {
   return rec.items.reduce((t, it) => { const i = ing(it.ingId); return i ? add(t, i, itemGrams(it) / 100) : t; }, ZERO());
 }
-function perServing(rec) { const t = recipeTotal(rec), s = rec.servings || 1; return add(ZERO(), t, 1 / s); }
+// Per-serving macros, cached for one screen draw (render() bumps calcGen) so lists and counts don't redo the maths.
+let calcGen = 0; const psCache = new WeakMap();
+function perServing(rec) {
+  const c = psCache.get(rec); if (c && c.g === calcGen) return c.v;
+  const t = recipeTotal(rec), s = rec.servings || 1, v = add(ZERO(), t, 1 / s);
+  psCache.set(rec, { g: calcGen, v }); return v;
+}
 const dayEntries = d => state.log[d] || [];
 const dayTotal = d => dayEntries(d).reduce((t, e) => add(t, e), ZERO());
 const macroLine = m => `<span class="ml"><span class="k">${r(m.kcal)} kcal</span><span><i class="dot-p">P</i> ${r(m.p, 1)}</span><span><i class="dot-c">C</i> ${r(m.c, 1)}</span><span><i class="dot-f">F</i> ${r(m.f, 1)}</span></span>`;
@@ -779,6 +787,7 @@ const LOGO = `<svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true"
 const TABS = [["today", "Today", "plate"], ["chat", "Assistant", "spark"], ["recipes", "Recipes", "pot"], ["shop", "Shop", "basket"], ["weight", "Weight", "scale"]];
 // Goals, foods and backup live on the profile page, opened from the round button at the top.
 function render() {
+  calcGen++;
   const inProfile = ui.tab === "goals" || ui.tab === "ingredients";
   document.getElementById("top").innerHTML = `<span class="brand">${LOGO}My kitchen</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${inProfile ? I.close : I.person}</button>`;
   document.getElementById("nav").innerHTML = `<div class="tabs">${TABS.map(([k, n, ic]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}"${ui.tab === k ? ` aria-current="page"` : ""}><span class="ic">${I[ic]}</span>${n}</button>`).join("")}</div>`;
@@ -956,7 +965,7 @@ function wTile(label, days) {
   if (!ch) return `<div class="wt"><span class="wt-l">${label}</span><b>–</b><span class="wt-s">not enough data</span></div>`;
   const up = ch.d > 0.05, down = ch.d < -0.05, good = mode === "min" ? up : mode === "max" ? down : !up && !down;
   const cls = !up && !down ? "" : good ? " good" : " bad";
-  return `<div class="wt${cls}"><span class="wt-l">${label}</span><b>${up ? "▲ +" : down ? "▼ −" : ""}${fmtKg(Math.abs(ch.d))}<small> kg</small></b><span class="wt-s">${ch.partial ? `since ${niceDate(ch.since)}` : up ? "gained" : down ? "lost" : "no change"}</span></div>`;
+  return `<div class="wt${cls}"><span class="wt-l">${label}</span><b>${up ? "▲ +" : down ? "▼ −" : ""}${fmtKg(Math.abs(ch.d))}<small> kg</small></b><span class="wt-s">${ch.partial ? `since ${new Date(ch.since + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" })}` : up ? "gained" : down ? "lost" : "no change"}</span></div>`;
 }
 // Round numbers for the y axis (step 0.2 / 0.5 / 1 / 2 / 5 kg).
 function niceTicks(lo, hi) {
@@ -982,7 +991,7 @@ function weightChart() {
   ui.wPts = pts.map(([d, v]) => ({ d, v, x: x(d), y: y(v) }));
   return `<div class="wchart"><svg id="wsvg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Weight over the last ${range[1].toLowerCase()}, from ${fmtKg(pts[0][1])} to ${fmtKg(lv)} kg">
     <defs><linearGradient id="wfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".22"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
-    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" class="grid"/><text x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" class="axis">${Number.isInteger(v) ? v : v.toFixed(1)}</text>`).join("")}
+    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" class="grid"/><text x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" class="axis">${ticks.every(Number.isInteger) ? v : v.toFixed(1)}</text>`).join("")}
     ${xl.map((d, i) => `<text x="${x(d).toFixed(1)}" y="${H - 8}" text-anchor="${["start", "middle", "end"][i]}" class="axis">${lab(d)}</text>`).join("")}
     <path d="${area}" fill="url(#wfill)"/>
     <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
@@ -1635,7 +1644,7 @@ document.addEventListener("change", e => {
 document.addEventListener("input", e => {
   if (e.target.id === "chatIn") { ui.chatDraft = e.target.value; return; }
   if (e.target.dataset.pk != null) { pickField(e.target); return; }
-  if (e.target.id === "recSearch") { ui.recQ = e.target.value; document.getElementById("recList").innerHTML = recipeCards(); return; }
+  if (e.target.id === "recSearch") { calcGen++; ui.recQ = e.target.value; document.getElementById("recList").innerHTML = recipeCards(); return; }
   if (e.target.id === "shopSearch") { ui.shopQ = e.target.value; document.getElementById("shopResults").innerHTML = shopResults(); return; }
   const f = e.target.closest("[data-form=goals]"); if (!f) return;
   const kcalFromMacros = num(f.p.value) * 4 + num(f.c.value) * 4 + num(f.f.value) * 9;
