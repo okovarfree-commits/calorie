@@ -189,6 +189,30 @@ nav button.on .ic{background:var(--accent-soft)}
 .toast button{min-height:36px;padding:0 12px;background:color-mix(in srgb,var(--bg) 16%,transparent);color:inherit;font-weight:700}
 .toast button:hover{background:color-mix(in srgb,var(--bg) 26%,transparent)}
 
+/* weight */
+.wfield{position:relative}
+.wfield input{font:750 1.5rem/1 var(--display);padding-right:44px;min-height:54px}
+.wfield span{position:absolute;right:14px;top:50%;transform:translateY(-50%);color:var(--muted);font-weight:600}
+.wform .primary{min-height:54px}
+.wtiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.wt{background:var(--surface);box-shadow:var(--shadow);border-radius:16px;padding:12px 10px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.wt-l{font-size:.7rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.wt b{font:750 1.25rem/1.2 var(--display);letter-spacing:-.01em;white-space:nowrap}
+.wt b small{font-size:.75rem;font-weight:600;color:var(--muted)}
+.wt-s{font-size:.74rem;color:var(--muted);font-weight:500}
+.wt.good b{color:var(--accent)}.wt.bad b{color:var(--danger)}
+.seg{display:flex;background:var(--field);border-radius:12px;padding:3px;gap:3px;margin-bottom:14px}
+.seg button{flex:1;min-height:36px;border-radius:9px;background:transparent;font-size:.875rem;color:var(--muted)}
+.seg button.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+.wchart{position:relative;overflow:hidden}
+.wchart svg{display:block;max-width:100%;height:auto;touch-action:pan-y}
+.wchart .grid{stroke:var(--line);stroke-width:1}
+.wchart .axis{fill:var(--muted);font:600 11px var(--body)}
+.wchart .cross{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}
+.wtip{position:absolute;top:0;transform:translateX(-50%);background:var(--text);color:var(--bg);border-radius:10px;padding:6px 10px;font-size:.78rem;pointer-events:none;display:flex;flex-direction:column;align-items:center;line-height:1.25;white-space:nowrap}
+.wtip b{font:750 .95rem var(--display)}
+.wchart-empty{padding:36px 8px;text-align:center;color:var(--muted);font-size:.9rem}
+
 /* lists */
 .item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
 .item:first-child,.card>h3+.item,.card>.item:first-of-type{border-top:0}
@@ -328,7 +352,7 @@ const PREF_LIKES = ["Chicken", "Beef", "Pork", "Fish", "Eggs", "Pasta", "Rice", 
 const PREF_STYLE = ["Quick (under 20 min)", "Meal prep in big batches", "Cheap", "Few dishes to wash", "Lots of protein"];
 function emptyShop() { return { plan: {}, checked: {}, extra: [] }; }
 function load() {
-  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop(), prefs: emptyPrefs(), habits: {} };
+  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop(), prefs: emptyPrefs(), habits: {}, weight: {} };
   try { const st = Object.assign(def, JSON.parse(localStorage.getItem(KEY)) || {}); st.prefs = { ...emptyPrefs(), ...st.prefs }; return st; } catch { return def; }
 }
 
@@ -371,6 +395,7 @@ function flushSave() {
   if (!db) { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {} return; }
   put("app/settings", settingsBody());
   put("app/shopping", state.shop);
+  put("app/weight", { entries: state.weight || {} });
   for (const d of dirtyDays) if (state.log[d]) put("days/" + d, { entries: state.log[d] });
   dirtyDays.clear();
 }
@@ -423,6 +448,9 @@ async function connect() {
       const sh = await handle.doc("app/shopping").get();
       state.shop = sh.exists ? { ...emptyShop(), ...structuredClone(sh.data()) } : emptyShop();
       synced["app/shopping"] = canon(state.shop);
+      const wt = await handle.doc("app/weight").get();
+      state.weight = wt.exists ? structuredClone(wt.data().entries || {}) : {};
+      synced["app/weight"] = canon({ entries: state.weight });
     }
     else {
       // First run in this account: carry over anything saved in this browser.
@@ -437,6 +465,11 @@ async function connect() {
       if (!sn.exists || sn.metadata.hasPendingWrites || saveQueued || chainBusy("app/shopping") || canon(sn.data()) === synced["app/shopping"]) return;
       state.shop = { ...emptyShop(), ...structuredClone(sn.data()) }; synced["app/shopping"] = canon(state.shop);
       if (ui.tab === "shop" && !dlg.open && !ui.loading) render();
+    }, () => {});
+    handle.doc("app/weight").onSnapshot(sn => {
+      if (!sn.exists || sn.metadata.hasPendingWrites || saveQueued || chainBusy("app/weight") || canon(sn.data()) === synced["app/weight"]) return;
+      state.weight = structuredClone(sn.data().entries || {}); synced["app/weight"] = canon({ entries: state.weight });
+      if (ui.tab === "weight" && !dlg.open && !ui.loading) render();
     }, () => {});
     await watchDay(ui.date);
   } catch { syncErr = "Couldn't load your saved data. Reload the page to try again."; }
@@ -726,6 +759,7 @@ const I = {
   plate: svg(`<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>`),
   spark: svg(`<path d="M12 3.5l1.9 4.9 4.9 1.9-4.9 1.9L12 17.1l-1.9-4.9-4.9-1.9 4.9-1.9z"/><path d="M18.5 15.5l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8z"/>`),
   pot: svg(`<path d="M4 10.5h16v5.5a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z"/><path d="M2 10.5h20"/><path d="M9 7c0-1.3 1.3-2.3 3-2.3s3 1 3 2.3"/>`),
+  scale: svg(`<rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><path d="M8 9.2a5.6 5.6 0 0 1 8 0"/><path d="M12 9.6l1.4-2"/>`),
   basket: svg(`<path d="M3.5 9.5h17l-1.8 9.1a2 2 0 0 1-2 1.6H7.3a2 2 0 0 1-2-1.6z"/><path d="M8.5 9.5 12 4l3.5 5.5"/><path d="M9.5 13.5v3M14.5 13.5v3"/>`),
   plus: svg(`<path d="M12 5v14M5 12h14"/>`, ` stroke-width="2.4"`),
   close: svg(`<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>`),
@@ -742,14 +776,15 @@ const I = {
 };
 // Wordmark: a tiny ring split into the three macro colours.
 const LOGO = `<svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">${[["--p", 0], ["--c", -23.04], ["--f", -46.08]].map(([c, o]) => `<circle cx="16" cy="16" r="11" fill="none" style="stroke:var(${c})" stroke-width="5.5" stroke-linecap="round" stroke-dasharray="15.5 53.6" stroke-dashoffset="${o - 3.8}" transform="rotate(-90 16 16)"/>`).join("")}</svg>`;
-const TABS = [["today", "Today", "plate"], ["chat", "Assistant", "spark"], ["recipes", "Recipes", "pot"], ["shop", "Shop", "basket"]];
+const TABS = [["today", "Today", "plate"], ["chat", "Assistant", "spark"], ["recipes", "Recipes", "pot"], ["shop", "Shop", "basket"], ["weight", "Weight", "scale"]];
 // Goals, foods and backup live on the profile page, opened from the round button at the top.
 function render() {
   const inProfile = ui.tab === "goals" || ui.tab === "ingredients";
   document.getElementById("top").innerHTML = `<span class="brand">${LOGO}My kitchen</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${inProfile ? I.close : I.person}</button>`;
   document.getElementById("nav").innerHTML = `<div class="tabs">${TABS.map(([k, n, ic]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}"${ui.tab === k ? ` aria-current="page"` : ""}><span class="ic">${I[ic]}</span>${n}</button>`).join("")}</div>`;
   const hadFocus = document.activeElement?.id === "chatIn";
-  document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, shop: viewShop, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
+  document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, shop: viewShop, weight: viewWeight, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
+  if (ui.tab === "weight") wireWeightChart();
   if (ui.tab === "chat") { ui.chat.forEach((m, k) => (m.proposal?.kind === "recipe" || m.proposal?.kind === "log") && refreshPick(k)); const log = document.getElementById("chatLog"); log && log.lastElementChild?.scrollIntoView({ block: "end" }); if (hadFocus) document.getElementById("chatIn")?.focus(); }
 }
 
@@ -899,6 +934,97 @@ function viewGoals() {
     <p class="muted" id="gcheck" style="margin-top:10px"></p><button class="primary" style="width:100%">Save goals</button></form>
   <div class="card"><h3>Backup</h3><p class="muted">${db ? "Your data is saved to your Claude account and syncs across devices. Export a copy now and then as a backup." : "Data lives in this browser only. Export regularly."}</p>
     <div class="row" style="margin-top:12px"><button class="grow" data-act="export">Export</button><button class="grow" data-act="import">Import</button></div></div>`;
+}
+
+// ---------- weight ----------
+// state.weight = { "YYYY-MM-DD": kg } (one reading per day; a new reading the same day replaces it).
+const W_RANGES = [["week", "Week", 7], ["month", "Month", 30], ["year", "Year", 365]];
+const fmtKg = v => `${(Math.round(v * 10) / 10).toFixed(1)}`;
+const wEntries = () => Object.entries(state.weight || {}).filter(([, v]) => v > 0).sort(([a], [b]) => a < b ? -1 : 1);
+// Change over the last N days: latest reading minus the reading on (or closest before) N days ago.
+// If nothing is that old yet, compare with the first reading and say since when.
+function wChange(days) {
+  const es = wEntries(); if (es.length < 2) return null;
+  const [lastD, last] = es[es.length - 1], cut = addDays(today(), -days);
+  let base = null; for (const e of es) if (e[0] <= cut) base = e;
+  const partial = !base; if (!base) base = es[0];
+  if (base[0] === lastD) return null;
+  return { d: last - base[1], since: base[0], partial };
+}
+function wTile(label, days) {
+  const ch = wChange(days), mode = state.goals.mode || "min";
+  if (!ch) return `<div class="wt"><span class="wt-l">${label}</span><b>–</b><span class="wt-s">not enough data</span></div>`;
+  const up = ch.d > 0.05, down = ch.d < -0.05, good = mode === "min" ? up : mode === "max" ? down : !up && !down;
+  const cls = !up && !down ? "" : good ? " good" : " bad";
+  return `<div class="wt${cls}"><span class="wt-l">${label}</span><b>${up ? "▲ +" : down ? "▼ −" : ""}${fmtKg(Math.abs(ch.d))}<small> kg</small></b><span class="wt-s">${ch.partial ? `since ${niceDate(ch.since)}` : up ? "gained" : down ? "lost" : "no change"}</span></div>`;
+}
+// Round numbers for the y axis (step 0.2 / 0.5 / 1 / 2 / 5 kg).
+function niceTicks(lo, hi) {
+  const span = Math.max(hi - lo, 0.4), raw = span / 4, steps = [0.1, 0.2, 0.5, 1, 2, 5, 10];
+  const step = steps.find(x => x >= raw) || 10, a = Math.floor(lo / step) * step, b = Math.ceil(hi / step) * step, out = [];
+  for (let v = a; v <= b + 1e-9; v += step) out.push(Math.round(v * 10) / 10);
+  return out;
+}
+function weightChart() {
+  const range = W_RANGES.find(x => x[0] === (ui.wRange || "month")), start = addDays(today(), -range[2] + 1);
+  const pts = wEntries().filter(([d]) => d >= start);
+  if (!pts.length) return `<div class="wchart-empty">No weigh-ins in the last ${range[1].toLowerCase()}. Add one above.</div>`;
+  const W = Math.max(280, Math.min(528, (document.getElementById("app")?.clientWidth || 360) - 64)), H = 210;
+  const L = 38, R = 14, T = 14, B = 28, t0 = Date.parse(start + "T12:00"), t1 = Date.parse(today() + "T12:00");
+  const vals = pts.map(p => p[1]), ticks = niceTicks(Math.min(...vals), Math.max(...vals)), y0 = ticks[0], y1 = ticks[ticks.length - 1];
+  const x = d => L + (W - L - R) * ((Date.parse(d + "T12:00") - t0) / Math.max(1, t1 - t0)), y = v => T + (H - T - B) * (1 - (v - y0) / (y1 - y0 || 1));
+  const line = pts.map(([d, v], i) => `${i ? "L" : "M"}${x(d).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const area = `${line}L${x(pts[pts.length - 1][0]).toFixed(1)},${H - B}L${x(pts[0][0]).toFixed(1)},${H - B}Z`;
+  // x labels: start, middle, today
+  const xl = [start, addDays(start, Math.round(range[2] / 2)), today()];
+  const lab = d => range[0] === "year" ? new Date(d + "T12:00").toLocaleDateString(undefined, { month: "short", year: "2-digit" }) : new Date(d + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  const [ld, lv] = pts[pts.length - 1];
+  ui.wPts = pts.map(([d, v]) => ({ d, v, x: x(d), y: y(v) }));
+  return `<div class="wchart"><svg id="wsvg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Weight over the last ${range[1].toLowerCase()}, from ${fmtKg(pts[0][1])} to ${fmtKg(lv)} kg">
+    <defs><linearGradient id="wfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".22"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
+    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" class="grid"/><text x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" class="axis">${Number.isInteger(v) ? v : v.toFixed(1)}</text>`).join("")}
+    ${xl.map((d, i) => `<text x="${x(d).toFixed(1)}" y="${H - 8}" text-anchor="${["start", "middle", "end"][i]}" class="axis">${lab(d)}</text>`).join("")}
+    <path d="${area}" fill="url(#wfill)"/>
+    <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    ${pts.length <= 45 ? pts.map(([d, v]) => `<circle cx="${x(d).toFixed(1)}" cy="${y(v).toFixed(1)}" r="3" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/>`).join("") : ""}
+    <circle cx="${x(ld).toFixed(1)}" cy="${y(lv).toFixed(1)}" r="5.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2.5"/>
+    <g id="wcross" style="display:none"><line id="wcl" y1="${T}" y2="${H - B}" class="cross"/><circle id="wcd" r="5.5" fill="var(--accent)" stroke="var(--surface)" stroke-width="2.5"/></g>
+    <rect x="${L}" y="0" width="${W - L - R}" height="${H}" fill="transparent" id="whit"/>
+  </svg><div class="wtip" id="wtip" hidden></div></div>`;
+}
+// Crosshair + tooltip: snaps to the nearest weigh-in (touch or mouse). Built with DOM APIs.
+function wireWeightChart() {
+  const svg = document.getElementById("wsvg"), hit = document.getElementById("whit"); if (!svg || !hit) return;
+  const tip = document.getElementById("wtip"), cross = document.getElementById("wcross"), cl = document.getElementById("wcl"), cd = document.getElementById("wcd");
+  const show = e => {
+    const box = svg.getBoundingClientRect(), px = (e.clientX - box.left) * (svg.viewBox.baseVal.width / box.width);
+    let best = ui.wPts[0]; for (const p of ui.wPts) if (Math.abs(p.x - px) < Math.abs(best.x - px)) best = p;
+    cross.style.display = ""; cl.setAttribute("x1", best.x); cl.setAttribute("x2", best.x); cd.setAttribute("cx", best.x); cd.setAttribute("cy", best.y);
+    tip.replaceChildren(Object.assign(document.createElement("b"), { textContent: `${fmtKg(best.v)} kg` }), Object.assign(document.createElement("span"), { textContent: niceDate(best.d) }));
+    tip.hidden = false;
+    const left = best.x * (box.width / svg.viewBox.baseVal.width);
+    tip.style.left = `${Math.min(Math.max(left, 50), box.width - 50)}px`;
+  };
+  const hide = () => { cross.style.display = "none"; tip.hidden = true; };
+  hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show); hit.addEventListener("pointerleave", hide);
+}
+function viewWeight() {
+  const es = wEntries(), last = es[es.length - 1], todayVal = (state.weight || {})[today()];
+  const rng = ui.wRange || "month";
+  return `<h2>Weight</h2>
+  <section class="card"><form class="wform" data-form="weight">
+      <label for="wIn" style="margin-top:0">${todayVal ? "Today's weight (update)" : "Today's weight"}</label>
+      <div class="row"><div class="wfield grow"><input id="wIn" inputmode="decimal" placeholder="${last ? fmtKg(last[1]) : "75.0"}" value="${todayVal ? fmtKg(todayVal) : ""}" autocomplete="off"><span>kg</span></div><button class="primary" style="min-width:96px">${todayVal ? "Update" : "Save"}</button></div>
+      ${last ? `<p class="muted" style="margin:10px 0 0">Last weigh-in: <b style="color:var(--text)">${fmtKg(last[1])} kg</b> · ${last[0] === today() ? "today" : niceDate(last[0])}</p>` : `<p class="muted" style="margin:10px 0 0">Weigh yourself at the same time each day, ideally in the morning before eating.</p>`}
+  </form></section>
+  <div class="wtiles">${wTile("Week", 7)}${wTile("Month", 30)}${wTile("Year", 365)}</div>
+  <section class="card">
+    <div class="seg" role="group" aria-label="Chart range">${W_RANGES.map(([k, n]) => `<button class="${rng === k ? "on" : ""}" data-act="wRange" data-v="${k}" aria-pressed="${rng === k}">${n}</button>`).join("")}</div>
+    ${es.length ? weightChart() : `<div class="wchart-empty">Your chart appears after your first weigh-in.</div>`}
+  </section>
+  ${es.length ? `<section class="card"><h3>History</h3>${es.slice(-10).reverse().map(([d, v], i, a) => { const prev = es[es.length - 2 - i], diff = prev ? v - prev[1] : 0;
+    return `<div class="item"><div class="grow"><div style="font-weight:600">${fmtKg(v)} kg</div><div class="muted">${d === today() ? "Today" : niceDate(d)}</div></div>${prev ? `<span class="muted" style="font-weight:600">${diff > 0.05 ? "+" : diff < -0.05 ? "−" : "±"}${fmtKg(Math.abs(diff))}</span>` : ""}<button class="x" data-act="wDel" data-v="${d}" aria-label="Delete weigh-in on ${niceDate(d)}">${I.trash}</button></div>`; }).join("")}
+    ${es.length > 10 ? `<p class="muted" style="margin:8px 0 0">Showing the last 10 of ${es.length} weigh-ins.</p>` : ""}</section>` : ""}`;
 }
 
 // ---------- shopping ----------
@@ -1214,7 +1340,8 @@ function aiContext() {
 - Eaten so far on ${ui.date === today() ? "today" : ui.date}: ${(t => `${r(t.kcal)} kcal, protein ${r(t.p)} g, carbs ${r(t.c)} g, fat ${r(t.f)} g`)(dayTotal(ui.date))}.
 - Likes: ${[...state.prefs.likes, state.prefs.likeText].filter(Boolean).join(", ") || "not set"}.
 - Avoid: ${state.prefs.avoid || "nothing listed"}.
-- Cooking style: ${state.prefs.style.join(", ") || "not set"}.`;
+- Cooking style: ${state.prefs.style.join(", ") || "not set"}.
+- Body weight: ${(es => es.length ? `${fmtKg(es[es.length - 1][1])} kg${wChange(30) ? `, ${wChange(30).d >= 0 ? "+" : "−"}${fmtKg(Math.abs(wChange(30).d))} kg over the last month` : ""}` : "not logged")(wEntries())}.`;
 }
 
 async function aiSend(text) {
@@ -1430,6 +1557,8 @@ const actions = {
   aiAddItem: v => aiAddItem(v),
   aiReset: () => { ui.chat = []; ui.chatErr = ""; },
   recCat: v => { ui.recCat = v; },
+  wRange: v => { ui.wRange = v; },
+  wDel: async v => { if (await ask(`Delete the weigh-in from ${niceDate(v)}?`)) { delete state.weight[v]; save(); render(); } },
   prefChip: v => { const [k, x] = [v.slice(0, v.indexOf(":")), v.slice(v.indexOf(":") + 1)], a = state.prefs[k]; const i = a.indexOf(x); if (i >= 0) a.splice(i, 1); else a.push(x); save(); },
   shopAdd: v => { const rc = state.recipes.find(x => x.id === v); if (!rc) return; state.shop.plan[v] = rc.servings || 1; ui.shopQ = ""; save(); },
   shopStep: v => { const [id, d] = v.split(":"), n = Math.max(0, (state.shop.plan[id] || 0) + +d); if (n) state.shop.plan[id] = n; else delete state.shop.plan[id]; save(); },
@@ -1475,7 +1604,7 @@ const actions = {
       try { d = JSON.parse(await inp.files[0].text()); if (!Array.isArray(d.ingredients) || !Array.isArray(d.recipes) || typeof d.log !== "object") throw 0; }
       catch { notice("That file isn't a backup from this app."); return; }
       if (!await ask("Replace your ingredients, recipes and goals with this backup? Days in the backup replace the same days here.", "Replace")) return;
-      state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log }, shop: d.shop || state.shop, prefs: { ...emptyPrefs(), ...(d.prefs || state.prefs) } };
+      state = { goals: d.goals || state.goals, ingredients: d.ingredients, recipes: d.recipes, log: { ...state.log, ...d.log }, shop: d.shop || state.shop, weight: { ...(state.weight || {}), ...(d.weight || {}) }, habits: state.habits || {}, prefs: { ...emptyPrefs(), ...(d.prefs || state.prefs) } };
       Object.keys(d.log).forEach(x => { loadedDays.add(x); markDay(x); }); save(); render();
     };
     inp.click();
@@ -1520,6 +1649,12 @@ document.addEventListener("submit", e => {
   if (e.target.dataset.form === "shopExtra") {
     e.preventDefault(); const t = document.getElementById("shopExtra").value.trim();
     if (t) { state.shop.extra.push({ id: uid(), text: t, done: false }); save(); render(); document.getElementById("shopExtra")?.focus(); }
+    return;
+  }
+  if (e.target.dataset.form === "weight") {
+    e.preventDefault(); const v = num(document.getElementById("wIn").value);
+    if (v < 20 || v > 400) { toast("Enter your weight in kg, e.g. 78.4"); return; }
+    (state.weight ||= {})[today()] = Math.round(v * 10) / 10; save(); render(); toast(`Saved ${fmtKg(v)} kg for today`);
     return;
   }
   if (e.target.dataset.form === "chat") { e.preventDefault(); aiSend(document.getElementById("chatIn").value); return; }
