@@ -176,6 +176,19 @@ nav button.on .ic{background:var(--accent-soft)}
 .fab:hover{background:color-mix(in srgb,var(--accent) 88%,var(--text))}
 .fab svg{width:26px;height:26px}
 
+.habit{width:100%;min-height:72px;margin:2px 0 14px;padding:12px 16px;gap:14px;justify-content:flex-start;text-align:left;border-radius:20px;
+  background:var(--accent);color:var(--on-accent);box-shadow:0 10px 24px -12px color-mix(in srgb,var(--accent) 70%,transparent)}
+.habit:hover{background:color-mix(in srgb,var(--accent) 90%,var(--text))}
+.habit .hb-ic{display:grid;place-items:center;width:44px;height:44px;border-radius:14px;background:rgb(255 255 255/.18);flex:none}
+.habit .hb-ic svg{width:24px;height:24px}
+.habit b{display:block;font:700 1.15rem/1.2 var(--display);letter-spacing:-.01em}
+.habit .grow span{display:block;font-size:.8rem;font-weight:500;opacity:.85;margin-top:2px}
+.habit .hb-check{width:30px;height:30px;border-radius:50%;border:2.5px solid currentColor;opacity:.75;flex:none}
+.toast{position:fixed;z-index:20;left:50%;transform:translateX(-50%);bottom:calc(92px + env(safe-area-inset-bottom,0px));display:flex;align-items:center;gap:14px;
+  padding:8px 8px 8px 18px;border-radius:16px;background:var(--text);color:var(--bg);font-weight:600;box-shadow:0 10px 30px -8px rgb(0 0 0/.35);max-width:calc(100% - 32px);width:max-content;white-space:nowrap}
+.toast button{min-height:36px;padding:0 12px;background:color-mix(in srgb,var(--bg) 16%,transparent);color:inherit;font-weight:700}
+.toast button:hover{background:color-mix(in srgb,var(--bg) 26%,transparent)}
+
 /* lists */
 .item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
 .item:first-child,.card>h3+.item,.card>.item:first-of-type{border-top:0}
@@ -315,7 +328,7 @@ const PREF_LIKES = ["Chicken", "Beef", "Pork", "Fish", "Eggs", "Pasta", "Rice", 
 const PREF_STYLE = ["Quick (under 20 min)", "Meal prep in big batches", "Cheap", "Few dishes to wash", "Lots of protein"];
 function emptyShop() { return { plan: {}, checked: {}, extra: [] }; }
 function load() {
-  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop(), prefs: emptyPrefs() };
+  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop(), prefs: emptyPrefs(), habits: {} };
   try { const st = Object.assign(def, JSON.parse(localStorage.getItem(KEY)) || {}); st.prefs = { ...emptyPrefs(), ...st.prefs }; return st; } catch { return def; }
 }
 
@@ -327,7 +340,8 @@ let db = null;
 const synced = {}, chains = {}, loadedDays = new Set();
 // Key-order-independent JSON, so a document read back from the store compares equal to what we wrote.
 const canon = v => Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",")}}` : JSON.stringify(v);
-const settingsBody = () => ({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes, prefs: state.prefs });
+// habits: { creatine: "YYYY-MM-DD" } = the last day it was ticked off; the button shows again on any later day.
+const settingsBody = () => ({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes, prefs: state.prefs, habits: state.habits || {} });
 function put(path, body) {
   const js = canon(body); if (synced[path] === js) return; synced[path] = js;
   syncStatus(1); busy[path] = (busy[path] || 0) + 1;
@@ -371,6 +385,7 @@ const chainBusy = path => busy[path] > 0;
 function applySettings(b) {
   state.goals = b.goals || state.goals; state.ingredients = structuredClone(b.ingredients || []); state.recipes = structuredClone(b.recipes || []);
   state.prefs = { ...emptyPrefs(), ...structuredClone(b.prefs || {}) };
+  state.habits = structuredClone(b.habits || {});
   synced["app/settings"] = canon(settingsBody());
 }
 async function connect() {
@@ -422,6 +437,15 @@ function ask(msg, okLabel = "Delete") {
       d.querySelector("#yes").onclick = () => { closeDlg(); res(true); };
     });
   });
+}
+// Short message at the bottom with an optional Undo.
+let toastTimer;
+function toast(msg, undo) {
+  let el = document.getElementById("toast");
+  if (!el) { el = document.createElement("div"); el.id = "toast"; el.className = "toast"; el.setAttribute("role", "status"); document.body.append(el); }
+  el.innerHTML = `<span>${esc(msg)}</span>${undo ? `<button type="button">Undo</button>` : ""}`;
+  el.querySelector("button")?.addEventListener("click", () => { el.hidden = true; undo(); });
+  el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => el.hidden = true, 5000);
 }
 function notice(msg) { openDlg(`<p style="font-size:1.05rem;margin:4px 0 0">${esc(msg)}</p><div class="foot"><button type="button" class="primary" data-close>OK</button></div>`); }
 
@@ -686,6 +710,7 @@ const I = {
   chev: svg(`<path d="M9.5 6l6 6-6 6"/>`),
   cal: svg(`<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>`),
   search: svg(`<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>`),
+  pill: svg(`<rect x="3.2" y="8.6" width="17.6" height="6.8" rx="3.4" transform="rotate(-40 12 12)"/><path d="M9.6 9.1l5.3 5.8"/>`),
   camera: svg(`<path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.3l1.4-2h5.6l1.4 2h1.3A2.5 2.5 0 0 1 20 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17.5z"/><circle cx="12" cy="12.8" r="3.6"/>`),
   send: svg(`<path d="M12 19V5M6 11l6-6 6 6"/>`, ` stroke-width="2.4"`),
   star: `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3.2l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.6l-5.2 2.7 1-5.8L3.5 9.4l5.9-.8z"/></svg>`,
@@ -769,7 +794,9 @@ function viewToday() {
         <span class="kc">${r(e.kcal)}</span><button class="x" data-act="delEntry" data-v="${e.id}" aria-label="Remove ${esc(e.name)}">${I.close}</button></div>`).join("")}
       ${other && !es.length ? `<p class="hint">Anything outside your meals. Log as often as you like.</p>` : ""}</section>`;
   }).join("");
-  return `<div class="datebar"><button class="iconbtn" data-act="date" data-v="${shift(-1)}" aria-label="Previous day">${I.left}</button>
+  const creatine = ui.date === today() && (state.habits || {}).creatine !== today()
+    ? `<button class="habit" data-act="habitDone" data-v="creatine"><span class="hb-ic">${I.pill}</span><span class="grow"><b>Take creatine</b><span>Tap when done · back tomorrow</span></span><span class="hb-check" aria-hidden="true"></span></button>` : "";
+  return `${creatine}<div class="datebar"><button class="iconbtn" data-act="date" data-v="${shift(-1)}" aria-label="Previous day">${I.left}</button>
     <button class="day" data-act="calendar" aria-label="Open calendar"><b>${dayName}</b><span>${I.cal}${dayName === niceDate(ui.date) ? "Calendar" : niceDate(ui.date)}</span></button>
     <button class="iconbtn" data-act="date" data-v="${shift(1)}" aria-label="Next day">${I.right}</button></div>
   <section class="card"><div class="sum">${ring}<div class="macros">${mrow("Protein", "p", "g")}${mrow("Carbs", "c", "g")}${mrow("Fat", "f", "g")}</div></div>
@@ -1395,6 +1422,7 @@ const actions = {
   delEntry: v => { state.log[ui.date] = dayEntries(ui.date).filter(e => e.id !== v); save(); },
   editIng: v => ingDialog(v),
   scanIng: () => scanLabel(),
+  habitDone: v => { const prev = (state.habits ||= {})[v]; state.habits[v] = today(); save(); toast("Creatine done for today", () => { state.habits[v] = prev; save(); render(); }); },
   // Camera button on Today: scan a pack, then log it to the meal that fits the time of day.
   scanToday: () => { const h = new Date().getHours(); scanLabel(food => entryDialog(h < 11 ? "Breakfast" : h < 16 ? "Lunch" : h < 22 ? "Dinner" : "Snack", null, food.name)); },
   delIng: async v => {
@@ -1478,6 +1506,7 @@ document.addEventListener("submit", e => {
 
 render();
 connect();
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !dlg.open) render(); });
 </script>
 </body>
 </html>
