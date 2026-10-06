@@ -67,8 +67,6 @@ main .sync{margin:10px 0}
 
 /* surfaces */
 .card{background:var(--surface);border-radius:var(--r-card);padding:16px;margin-bottom:12px;box-shadow:var(--shadow)}
-/* Off-screen cards skip layout and paint until scrolled near (big win on long lists on phones). */
-main>.card,#recList>.card{content-visibility:auto;contain-intrinsic-size:auto 180px}
 .page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0 16px}
 .page-head h2{margin:0}
 .section-gap{margin-top:22px}
@@ -315,7 +313,8 @@ label.inline select{width:auto;min-height:38px;padding-top:6px;padding-bottom:6p
 
 /* dialogs: bottom sheet on phones, centred card on wider screens */
 dialog{border:0;padding:12px 18px calc(20px + env(safe-area-inset-bottom,0px));background:var(--surface);color:var(--text);
-  width:100%;max-width:560px;max-height:90vh;margin:auto auto 0;border-radius:26px 26px 0 0;box-shadow:0 -12px 40px rgb(0 0 0/.2)}
+  width:100%;max-width:560px;max-height:90vh;max-height:90dvh;margin:auto auto 0;border-radius:26px 26px 0 0;box-shadow:0 -12px 40px rgb(0 0 0/.2);
+  overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
 dialog::before{content:"";display:block;width:42px;height:5px;border-radius:3px;background:var(--line-2);margin:0 auto 14px}
 dialog[open]{animation:sheet .26s cubic-bezier(.2,.8,.2,1)}
 dialog::backdrop{background:var(--scrim)}
@@ -389,14 +388,19 @@ const synced = {}, chains = {}, loadedDays = new Set();
 const canon = v => Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeof v === "object" ? `{${Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",")}}` : JSON.stringify(v);
 // habits: { creatine: "YYYY-MM-DD" } = the last day it was ticked off; the button shows again on any later day.
 const settingsBody = () => ({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes, prefs: state.prefs, habits: state.habits || {} });
+// Never let a slow network or a slow Claude reply freeze the app: everything awaited gets a time limit.
+const withTimeout = (promise, ms, fallback) => Promise.race([promise, new Promise(res => setTimeout(() => res(fallback), ms))]);
+const TIMEOUT = Symbol("timeout");
 function put(path, body) {
   const js = canon(body); if (synced[path] === js) return; synced[path] = js;
   syncStatus(1); busy[path] = (busy[path] || 0) + 1;
-  chains[path] = (chains[path] || Promise.resolve()).then(() => db.doc(path).set(body))
+  chains[path] = (chains[path] || Promise.resolve()).then(async () => { if (await withTimeout(db.doc(path).set(body).then(() => 1), 15000, TIMEOUT) === TIMEOUT) throw { code: "timeout" }; })
     .then(() => syncStatus(-1), e => { delete synced[path]; syncStatus(-1, e); })
     .finally(() => busy[path]--);
 }
 let pending = 0, syncErr = "";
+// Show a connection notice that stays until the next successful save.
+function syncNotice(msg) { syncErr = msg; const el = document.getElementById("sync"); if (el) { el.textContent = msg; el.hidden = false; } }
 function syncStatus(d, e) {
   pending += d; if (e) syncErr = e.code === "quota_exceeded" ? "Storage is full. Export a backup and delete old days." : "Couldn't save the last change. Check your connection; it will retry on your next edit.";
   else if (!pending) syncErr = "";
@@ -411,6 +415,7 @@ function save() {
   if (saveQueued) return;
   saveQueued = true;
   requestAnimationFrame(() => setTimeout(flushSave, 0));
+  setTimeout(flushSave, 250); // fallback if animation frames are paused (background tab, some phone web views)
 }
 function flushSave() {
   if (!saveQueued) return;
@@ -436,11 +441,11 @@ function watchDay(d) {
         const js = body ? canon(body) : null;
         if (js !== synced[path] || !loadedDays.has(d)) {
           if (body) { state.log[d] = structuredClone(body.entries || []); synced[path] = canon({ entries: state.log[d] }); } else if (!loadedDays.has(d)) delete state.log[d];
-          loadedDays.add(d); if (ui.date === d && !dlg.open && !ui.loading) render();
+          loadedDays.add(d); if (ui.date === d && !dlg.open && !ui.loading) safeRender();
         }
       }
       resolve();
-    }, () => { syncErr = "Lost the connection to your saved data. Reload the page."; syncStatus(0); resolve(); });
+    }, () => { syncNotice("Lost the connection to your saved data. Reload the app."); resolve(); });
   });
 }
 const busy = {};
@@ -464,7 +469,8 @@ async function connect() {
   const handle = await claude.use("db"); if (!handle) return;
   ui.loading = true; render();
   try {
-    const snap = await handle.doc("app/settings").get();
+    const snap = await withTimeout(handle.doc("app/settings").get(), 10000, TIMEOUT);
+    if (snap === TIMEOUT) throw new Error("timeout");
     db = handle;
     if (snap.exists) {
       state.log = {}; applySettings(snap.data());
@@ -482,23 +488,31 @@ async function connect() {
     }
     handle.doc("app/settings").onSnapshot(sn => {
       if (!sn.exists || sn.metadata.hasPendingWrites || saveQueued || chainBusy("app/settings") || canon(sn.data()) === synced["app/settings"]) return;
-      applySettings(sn.data()); if (!dlg.open && !ui.loading) render();
+      applySettings(sn.data()); if (!dlg.open && !ui.loading) safeRender();
     }, () => {});
     handle.doc("app/shopping").onSnapshot(sn => {
       if (!sn.exists || sn.metadata.hasPendingWrites || saveQueued || chainBusy("app/shopping") || canon(sn.data()) === synced["app/shopping"]) return;
       state.shop = { ...emptyShop(), ...structuredClone(sn.data()) }; synced["app/shopping"] = canon(state.shop);
-      if (ui.tab === "shop" && !dlg.open && !ui.loading) render();
+      if (ui.tab === "shop" && !dlg.open && !ui.loading) safeRender();
     }, () => {});
     handle.doc("app/weight").onSnapshot(sn => {
       if (!sn.exists || sn.metadata.hasPendingWrites || saveQueued || chainBusy("app/weight") || canon(sn.data()) === synced["app/weight"]) return;
       state.weight = structuredClone(sn.data().entries || {}); synced["app/weight"] = canon({ entries: state.weight });
-      if (ui.tab === "weight" && !dlg.open && !ui.loading) render();
+      if (ui.tab === "weight" && !dlg.open && !ui.loading) safeRender();
     }, () => {});
-    await watchDay(ui.date);
-  } catch { syncErr = "Couldn't load your saved data. Reload the page to try again."; }
+    await withTimeout(watchDay(ui.date), 8000);
+  } catch { syncNotice("Couldn't reach your saved data. Check your connection and reload the app."); }
   ui.loading = false; render();
 }
-async function goToDate(d) { ui.date = d; if (db) { ui.loading = !loadedDays.has(d); render(); await watchDay(d); ui.loading = false; } render(); }
+async function goToDate(d) {
+  ui.date = d;
+  if (db) {
+    ui.loading = !loadedDays.has(d); render();
+    if (await withTimeout(watchDay(d).then(() => 1), 8000, TIMEOUT) === TIMEOUT) syncNotice("Your log is slow to load. It will appear when the connection catches up.");
+    ui.loading = false;
+  }
+  render();
+}
 
 // In-page confirmation (the claude.ai viewer ignores window.confirm).
 function ask(msg, okLabel = "Delete") {
@@ -747,7 +761,13 @@ async function lookupOnline(query) {
 }
 
 // Inside claude.ai: ask Claude for typical values when nothing else knows the food.
-async function lookupAI(query) {
+const aiCache = new Map();
+function lookupAI(query) {
+  const key = norm(query).join(" ");
+  if (!aiCache.has(key)) aiCache.set(key, withTimeout(lookupAIRaw(query), 25000, null).then(r => { if (!r) aiCache.delete(key); return r; }));
+  return aiCache.get(key);
+}
+async function lookupAIRaw(query) {
   const sample = window.claude?.use ? await claude.use("sample") : null; if (!sample) return null;
   try {
     const j = await sample.json(`Give typical nutrition values per 100 g for the food "${query}" as it is usually bought (raw unless the name says cooked), averaged from standard food composition tables. Reply with JSON only: {"name": short English food name, "kcal": number, "p": protein grams, "c": carbohydrate grams, "f": fat grams}. If "${query}" is not a food, reply {"name": null}.`, { modelTier: "quick" });
@@ -779,8 +799,17 @@ const dlg = document.getElementById("dlg");
 function openDlg(html, onOpen) { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); onOpen && onOpen(dlg); }
 function closeDlg() { dlg.close(); }
 dlg.addEventListener("click", e => { if (e.target === dlg) closeDlg(); });
+dlg.addEventListener("focusin", e => { if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) setTimeout(() => e.target.scrollIntoView({ block: "center", behavior: "smooth" }), 300); });
 
 // ---------- rendering ----------
+// Background updates (sync from another device) wait while you're typing in the page, then redraw on blur.
+let renderPending = false;
+function safeRender(force) {
+  const a = document.activeElement, typing = a && a.closest?.("#app") && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
+  if (typing && !force) { renderPending = true; return; }
+  renderPending = false; render();
+}
+document.addEventListener("focusout", () => setTimeout(() => { if (renderPending && !dlg.open) safeRender(); }, 0));
 // Line icons (24px grid, 2px stroke, currentColor).
 const svg = (d, extra = "") => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${extra}>${d}</svg>`;
 const I = {
@@ -1208,6 +1237,8 @@ function entryDialog(meal, preRecipe, preFood) {
     d.querySelectorAll("[data-fav]").forEach(b => b.onclick = () => { f.type.value = "recipe"; draw(); f.ref.value = b.dataset.fav; syncDef(); f.amt.focus(); });
     f.onsubmit = async e => {
       e.preventDefault();
+      const addBtn = f.querySelector(".foot .primary");
+      if (addBtn.disabled) return; // already working on it
       const t = f.type.value; let e2;
       if (t === "recipe" && f.mkdef) { // remember or clear this meal's default recipe
         const m = f.meal.value, defs = state.prefs.mealDefaults ||= {};
@@ -1216,9 +1247,11 @@ function entryDialog(meal, preRecipe, preFood) {
       if (t === "recipe") { const rc = state.recipes.find(x => x.id === f.ref?.value); if (!rc) return; const a = num(f.amt.value) || 1; e2 = { name: rc.name, amount: `${r(a, 2)} serving${a == 1 ? "" : "s"}`, ...add(ZERO(), perServing(rc), a) }; }
       else if (t === "ingredient") {
         const q = f.food.value.trim(), st = d.querySelector("#fst"); if (!q) return;
-        st.textContent = "Looking up…";
+        st.textContent = "Looking up… (unknown foods ask Claude, this can take a few seconds)"; addBtn.disabled = true; addBtn.textContent = "Looking up…";
         const n = await resolveFood(q);
-        if (!n) { st.textContent = "Couldn't find that — try another name or use Quick add."; return; }
+        addBtn.disabled = false; addBtn.textContent = "Add";
+        if (!dlg.open) return; // sheet was closed meanwhile
+        if (!n) { st.textContent = "Couldn't find that. Try another name, or use Quick add."; return; }
         const i = ing(ensureIngredient(q, n)), pc = f.unit?.value === "pc" && pieceOf(i), a = num(f.amt.value), g = pc ? a * pc.g : a;
         e2 = { name: i.name, amount: pc ? `${countLabel(a, pc)} (${r(g)} g)` : `${r(g)} g`, ...add(ZERO(), i, g / 100) };
       }
@@ -1371,11 +1404,15 @@ function recipeDialog(id, draft, onSaved) {
     draw();
     f.onsubmit = async e => {
       e.preventDefault();
-      const err = d.querySelector("#err"), used = rows.filter(x => x.name.trim());
+      const err = d.querySelector("#err"), used = rows.filter(x => x.name.trim()), saveBtn = f.querySelector(".foot .primary");
+      if (saveBtn.disabled) return;
       // Resolve anything typed but not looked up yet (e.g. Save pressed straight after typing).
       err.textContent = "";
       used.forEach(x => { if (!x.n && !x.pending) lookup(rows.indexOf(x)); });
-      await Promise.all(used.map(x => x.pending));
+      saveBtn.disabled = true; saveBtn.textContent = "Looking up…";
+      await withTimeout(Promise.all(used.map(x => x.pending)), 30000);
+      saveBtn.disabled = false; saveBtn.textContent = "Save";
+      if (!dlg.open) return;
       const missing = used.filter(x => !x.n).map(x => x.name.trim());
       if (missing.length) { err.textContent = `Couldn't find: ${missing.join(", ")}. Change the name or add it under Profile › My foods.`; return; }
       if (!used.length) { err.textContent = "Add at least one ingredient."; return; }
@@ -1706,9 +1743,19 @@ document.addEventListener("click", e => {
   const el = e.target.closest("[data-act]");
   if (!el || el.tagName === "INPUT") return;
   if (el.dataset.act === "date") return goToDate(el.dataset.v);
-  actions[el.dataset.act](el.dataset.v);
-  if (!dlg.open) render();
+  try {
+    const r = actions[el.dataset.act]?.(el.dataset.v);
+    if (r && r.catch) r.catch(recover);
+  } catch (err) { recover(err); }
+  if (!dlg.open) safeRender(true);
 });
+// If anything throws, keep the app usable: say so and redraw instead of freezing.
+function recover(err) {
+  console.error(err);
+  try { toast("Something went wrong. Try that again."); if (!dlg.open) render(); } catch {}
+}
+addEventListener("error", e => recover(e.error || e.message));
+addEventListener("unhandledrejection", e => recover(e.reason));
 function pickField(el) {
   const k = el.dataset.pk, p = ui.chat[k]?.proposal, f = el.dataset.pf; if (!p || f === "newName") return;
   const v = el.type === "checkbox" ? el.checked : el.value;
@@ -1756,7 +1803,7 @@ document.addEventListener("submit", e => {
 
 render();
 connect();
-document.addEventListener("visibilitychange", () => { if (!document.hidden && !dlg.open) render(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !dlg.open) safeRender(); });
 </script>
 </body>
 </html>
