@@ -369,6 +369,8 @@ let ui = { tab: "today", date: today() };
 // Shopping: portions planned per recipe, ticked items, and extra free-text items.
 // Food preferences the assistant uses for meal ideas.
 function emptyPrefs() { return { likes: [], style: [], likeText: "", avoid: "" }; }
+// prefs.mealDefaults: { Breakfast: recipeId, ... } = recipe pre-selected when adding to that meal.
+const mealDefault = m => { const id = state.prefs.mealDefaults?.[m]; return state.recipes.some(r => r.id === id) ? id : null; };
 const PREF_LIKES = ["Chicken", "Beef", "Pork", "Fish", "Eggs", "Pasta", "Rice", "Potatoes", "Wraps", "Oats", "Italian", "Mexican", "Asian", "Czech", "Spicy", "Sweet breakfasts"];
 const PREF_STYLE = ["Quick (under 20 min)", "Meal prep in big batches", "Cheap", "Few dishes to wash", "Lots of protein"];
 function emptyShop() { return { plan: {}, checked: {}, extra: [] }; }
@@ -1179,11 +1181,17 @@ function entryDialog(meal, preRecipe, preFood) {
     const opts = (arr) => arr.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
     const draw = () => {
       const t = f.type.value;
-      fields.innerHTML = t === "recipe" ? (state.recipes.length ? `<label>Recipe</label><select name="ref">${opts(state.recipes)}</select><label>Servings eaten</label><input name="amt" inputmode="decimal" value="1">` : `<p class="muted">No recipes yet.</p>`)
+      fields.innerHTML = t === "recipe" ? (state.recipes.length ? `<label>Recipe</label><select name="ref">${opts(state.recipes)}</select>
+          <label class="inline" style="margin-top:10px"><input type="checkbox" name="mkdef"> <span id="defLbl"></span></label>
+          <label>Servings eaten</label><input name="amt" inputmode="decimal" value="1">` : `<p class="muted">No recipes yet.</p>`)
         : t === "ingredient" ? `${foodDatalist()}<label>Food</label><input list="foods" name="food" placeholder="e.g. banana"><label>Amount</label><div class="row"><input name="amt" inputmode="decimal" value="100" class="grow"><span id="unit" class="muted" style="min-width:2em">g</span></div><p class="muted" id="fst"></p>`
         : `<label>Name</label><input name="name" value="Quick add"><div class="grid2"><div><label>kcal</label><input name="kcal" inputmode="decimal"></div><div><label>Protein (g)</label><input name="p" inputmode="decimal"></div><div><label>Carbs (g)</label><input name="c" inputmode="decimal"></div><div><label>Fat (g)</label><input name="f" inputmode="decimal"></div></div>`;
-      if (preRecipe && t === "recipe" && f.ref) f.ref.value = preRecipe;
+      if (t === "recipe" && f.ref) { const def = mealDefault(f.meal.value); if (preRecipe) f.ref.value = preRecipe; else if (def) f.ref.value = def; syncDef(); }
     };
+    // "Start <meal> with this recipe" tick box mirrors whether the chosen recipe is that meal's default.
+    const syncDef = () => { if (!f.mkdef) return; f.mkdef.checked = mealDefault(f.meal.value) === f.ref.value; d.querySelector("#defLbl").textContent = `Start ${mealName(f.meal.value)} with this recipe`; };
+    fields.addEventListener("change", e => { if (e.target.name === "ref") syncDef(); });
+    f.meal.addEventListener("change", () => { if (f.type.value === "recipe" && f.ref && !preRecipe) { const def = mealDefault(f.meal.value); if (def) f.ref.value = def; } syncDef(); });
     if (preFood) f.type.value = "ingredient";
     f.type.onchange = draw; draw();
     d.querySelector("#scanBtn")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name)));
@@ -1197,10 +1205,14 @@ function entryDialog(meal, preRecipe, preFood) {
       if (pc && num(f.amt.value) === 100) f.amt.value = 1;
     });
     if (preFood && f.food) { f.food.value = preFood; f.food.dispatchEvent(new Event("change", { bubbles: true })); f.amt.select(); }
-    d.querySelectorAll("[data-fav]").forEach(b => b.onclick = () => { f.type.value = "recipe"; draw(); f.ref.value = b.dataset.fav; f.amt.focus(); });
+    d.querySelectorAll("[data-fav]").forEach(b => b.onclick = () => { f.type.value = "recipe"; draw(); f.ref.value = b.dataset.fav; syncDef(); f.amt.focus(); });
     f.onsubmit = async e => {
       e.preventDefault();
       const t = f.type.value; let e2;
+      if (t === "recipe" && f.mkdef) { // remember or clear this meal's default recipe
+        const m = f.meal.value, defs = state.prefs.mealDefaults ||= {};
+        if (f.mkdef.checked) defs[m] = f.ref.value; else if (defs[m] === f.ref.value) delete defs[m];
+      }
       if (t === "recipe") { const rc = state.recipes.find(x => x.id === f.ref?.value); if (!rc) return; const a = num(f.amt.value) || 1; e2 = { name: rc.name, amount: `${r(a, 2)} serving${a == 1 ? "" : "s"}`, ...add(ZERO(), perServing(rc), a) }; }
       else if (t === "ingredient") {
         const q = f.food.value.trim(), st = d.querySelector("#fst"); if (!q) return;
