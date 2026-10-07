@@ -374,7 +374,7 @@ const PREF_LIKES = ["Chicken", "Beef", "Pork", "Fish", "Eggs", "Pasta", "Rice", 
 const PREF_STYLE = ["Quick (under 20 min)", "Meal prep in big batches", "Cheap", "Few dishes to wash", "Lots of protein"];
 function emptyShop() { return { plan: {}, checked: {}, extra: [] }; }
 function load() {
-  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop(), prefs: emptyPrefs(), habits: {}, weight: {} };
+  const def = { ingredients: [], recipes: [], log: {}, goals: { kcal: 2000, p: 150, c: 200, f: 65 }, shop: emptyShop(), prefs: emptyPrefs(), habits: {}, weight: {}, sum: {} };
   try { const st = Object.assign(def, JSON.parse(localStorage.getItem(KEY)) || {}); st.prefs = { ...emptyPrefs(), ...st.prefs }; return st; } catch { return def; }
 }
 
@@ -400,18 +400,19 @@ function withTimeout(promise, ms, fallback, label) {
 // ---------- diagnostics ----------
 // A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
 // account database every few seconds, so a "it got stuck" report can be traced afterwards.
-const APP_VERSION = "2026-10-07b";
-const DIAG = []; let diagDirty = false, diagLastWrite = 0;
+const APP_VERSION = "2026-10-07c";
+const DIAG = []; let diagDirty = false, diagProblem = false, diagLastWrite = 0;
 function diag(ev, detail = "") {
   let sheet = ""; try { if (dlg.open) sheet = dlg.querySelector("h3")?.textContent || "open"; } catch {} // dlg may not exist yet at start-up
   DIAG.push({ at: new Date().toISOString().slice(0, 19), ev, detail: String(detail ?? "").slice(0, 300), tab: ui?.tab, sheet });
   if (DIAG.length > 60) DIAG.shift();
   diagDirty = true;
-  if (/error|timeout|blocked/.test(ev)) flushDiag(); // problems are written right away
+  // Normal taps stay in memory only; the log is saved (with the taps leading up to it) only when something went wrong.
+  if (/error|timeout|blocked/.test(ev)) { diagProblem = true; flushDiag(); }
 }
 function flushDiag() {
-  if (!diagDirty || !db || Date.now() - diagLastWrite < 2000) return;
-  diagDirty = false; diagLastWrite = Date.now();
+  if (!diagProblem || !diagDirty || !db || Date.now() - diagLastWrite < 2000) return;
+  diagDirty = false; diagProblem = false; diagLastWrite = Date.now();
   try { db.doc("app/diag").set({ version: APP_VERSION, ua: navigator.userAgent, updated: new Date().toISOString(), events: DIAG }).catch(() => {}); } catch {}
 }
 setInterval(flushDiag, 8000);
@@ -445,6 +446,33 @@ function save() {
   requestAnimationFrame(() => setTimeout(flushSave, 0));
   setTimeout(flushSave, 250); // fallback if animation frames are paused (background tab, some phone web views)
 }
+// Per-day totals kept in one small "app/summary" document ({ "YYYY-MM-DD": [kcal, p, c, f, items] }),
+// so the calendar and the Profile summary read one document instead of every day ever logged.
+const daySum = d => { const t = dayTotal(d), n = dayEntries(d).length; return n ? [Math.round(t.kcal), Math.round(t.p * 10) / 10, Math.round(t.c * 10) / 10, Math.round(t.f * 10) / 10, n] : null; };
+let sumChain = Promise.resolve(), sumReady = null;
+function writeDaySum(d) {
+  const v = daySum(d); (state.sum ||= {})[d] = v;
+  // Merge just this day (another device may be writing other days); create the document if it isn't there yet.
+  sumChain = sumChain.then(() => withTimeout(db.doc("app/summary").update({ days: { [d]: v } }), 15000, TIMEOUT, "save summary"))
+    .then(r => { if (r === TIMEOUT) throw 0; })
+    .catch(() => withTimeout(db.doc("app/summary").set({ days: state.sum }), 15000, null, "save summary").catch(() => {}));
+}
+// Load the summary; the first time (or if it is missing) build it once from the saved days.
+function loadSummary() {
+  return sumReady ||= (async () => {
+    const sn = await withTimeout(db.doc("app/summary").get(), 8000, null, "load summary");
+    if (sn?.exists) { state.sum = { ...(sn.data().days || {}) }; return true; }
+    if (sn === null) { sumReady = null; return false; } // timed out: try again next time
+    const q = await withTimeout(db.collection("days").limit(1000).get(), 20000, null, "build summary");
+    if (!q) { sumReady = null; return false; }
+    const sum = {};
+    q.docs.forEach(x => { const es = x.data().entries || []; if (es.length) { const t = es.reduce((a, e) => add(a, e), ZERO()); sum[x.id] = [Math.round(t.kcal), Math.round(t.p * 10) / 10, Math.round(t.c * 10) / 10, Math.round(t.f * 10) / 10, es.length]; } });
+    state.sum = { ...sum, ...(state.sum || {}) };
+    await withTimeout(db.doc("app/summary").set({ days: state.sum }), 15000, null, "save summary").catch(() => {});
+    diag("summary-built", Object.keys(sum).length + " days");
+    return true;
+  })().catch(() => { sumReady = null; return false; });
+}
 function flushSave() {
   if (!saveQueued) return;
   saveQueued = false;
@@ -452,7 +480,7 @@ function flushSave() {
   put("app/settings", settingsBody());
   put("app/shopping", state.shop);
   put("app/weight", { entries: state.weight || {} });
-  for (const d of dirtyDays) if (state.log[d]) put("days/" + d, { entries: state.log[d] });
+  for (const d of dirtyDays) if (state.log[d]) { put("days/" + d, { entries: state.log[d] }); writeDaySum(d); }
   dirtyDays.clear();
 }
 // Don't lose a queued save when the app is closed or sent to the background.
@@ -529,6 +557,7 @@ async function connect() {
       if (ui.tab === "weight" && !dlg.open && !ui.loading) safeRender();
     }, () => {});
     await withTimeout(watchDay(ui.date), 8000);
+    setTimeout(() => { loadSummary(); handle.doc("app/summary").onSnapshot(sn => { if (sn.exists) state.sum = { ...(state.sum || {}), ...(sn.data().days || {}) }; }, () => {}); }, 1500);
   } catch { syncNotice("Couldn't reach your saved data. Check your connection and reload the app."); }
   ui.loading = false; render();
 }
@@ -930,7 +959,11 @@ function overallCard() {
 
 async function allDayTotals() {
   const tot = {};
-  if (db) try { const q = await withTimeout(db.collection("days").limit(1000).get(), 8000, { docs: [] }, "load all days"); q.docs.forEach(x => { const es = x.data().entries || []; tot[x.id] = { t: es.reduce((a, e) => add(a, e), ZERO()), n: es.length }; }); } catch {}
+  if (db) {
+    await withTimeout(loadSummary(), 9000, false, "summary for history");
+    for (const [d, v] of Object.entries(state.sum || {})) if (v) tot[d] = { t: { kcal: v[0], p: v[1], c: v[2], f: v[3] }, n: v[4] };
+  }
+  // Days open in this session are always the freshest.
   for (const d of Object.keys(state.log)) if (!db || loadedDays.has(d)) tot[d] = { t: dayTotal(d), n: dayEntries(d).length };
   return tot;
 }
