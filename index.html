@@ -389,7 +389,34 @@ const canon = v => Array.isArray(v) ? `[${v.map(canon).join(",")}]` : v && typeo
 // habits: { creatine: "YYYY-MM-DD" } = the last day it was ticked off; the button shows again on any later day.
 const settingsBody = () => ({ goals: state.goals, ingredients: state.ingredients, recipes: state.recipes, prefs: state.prefs, habits: state.habits || {} });
 // Never let a slow network or a slow Claude reply freeze the app: everything awaited gets a time limit.
-const withTimeout = (promise, ms, fallback) => Promise.race([promise, new Promise(res => setTimeout(() => res(fallback), ms))]);
+function withTimeout(promise, ms, fallback, label) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const t = setTimeout(() => { if (done) return; done = true; if (label) diag("timeout", label); resolve(fallback); }, ms);
+    Promise.resolve(promise).then(v => { if (!done) { done = true; clearTimeout(t); resolve(v); } }, e => { if (!done) { done = true; clearTimeout(t); reject(e); } });
+  });
+}
+
+// ---------- diagnostics ----------
+// A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
+// account database every few seconds, so a "it got stuck" report can be traced afterwards.
+const APP_VERSION = "2026-10-07b";
+const DIAG = []; let diagDirty = false, diagLastWrite = 0;
+function diag(ev, detail = "") {
+  let sheet = ""; try { if (dlg.open) sheet = dlg.querySelector("h3")?.textContent || "open"; } catch {} // dlg may not exist yet at start-up
+  DIAG.push({ at: new Date().toISOString().slice(0, 19), ev, detail: String(detail ?? "").slice(0, 300), tab: ui?.tab, sheet });
+  if (DIAG.length > 60) DIAG.shift();
+  diagDirty = true;
+  if (/error|timeout|blocked/.test(ev)) flushDiag(); // problems are written right away
+}
+function flushDiag() {
+  if (!diagDirty || !db || Date.now() - diagLastWrite < 2000) return;
+  diagDirty = false; diagLastWrite = Date.now();
+  try { db.doc("app/diag").set({ version: APP_VERSION, ua: navigator.userAgent, updated: new Date().toISOString(), events: DIAG }).catch(() => {}); } catch {}
+}
+setInterval(flushDiag, 8000);
+// Freeze detector: a 1 s heartbeat that arrives much later means the page was blocked.
+{ let last = performance.now(); setInterval(() => { const n = performance.now(); if (n - last > 3000 && !document.hidden) diag("blocked", `page froze for ~${Math.round((n - last - 1000) / 100) / 10}s`); last = n; }, 1000); }
 const TIMEOUT = Symbol("timeout");
 function put(path, body) {
   const js = canon(body); if (synced[path] === js) return; synced[path] = js;
@@ -402,6 +429,7 @@ let pending = 0, syncErr = "";
 // Show a connection notice that stays until the next successful save.
 function syncNotice(msg) { syncErr = msg; const el = document.getElementById("sync"); if (el) { el.textContent = msg; el.hidden = false; } }
 function syncStatus(d, e) {
+  if (e) diag("save-error", e.code || e.message || e);
   pending += d; if (e) syncErr = e.code === "quota_exceeded" ? "Storage is full. Export a backup and delete old days." : "Couldn't save the last change. Check your connection; it will retry on your next edit.";
   else if (!pending) syncErr = "";
   const el = document.getElementById("sync"); if (el) { el.textContent = syncErr; el.hidden = !syncErr; }
@@ -469,15 +497,15 @@ async function connect() {
   const handle = await claude.use("db"); if (!handle) return;
   ui.loading = true; render();
   try {
-    const snap = await withTimeout(handle.doc("app/settings").get(), 10000, TIMEOUT);
+    const snap = await withTimeout(handle.doc("app/settings").get(), 10000, TIMEOUT, "load settings");
     if (snap === TIMEOUT) throw new Error("timeout");
     db = handle;
     if (snap.exists) {
       state.log = {}; applySettings(snap.data());
-      const sh = await handle.doc("app/shopping").get();
+      const sh = await withTimeout(handle.doc("app/shopping").get(), 8000, { exists: false }, "load shopping");
       state.shop = sh.exists ? { ...emptyShop(), ...structuredClone(sh.data()) } : emptyShop();
       synced["app/shopping"] = canon(state.shop);
-      const wt = await handle.doc("app/weight").get();
+      const wt = await withTimeout(handle.doc("app/weight").get(), 8000, { exists: false }, "load weight");
       state.weight = wt.exists ? structuredClone(wt.data().entries || {}) : {};
       synced["app/weight"] = canon({ entries: state.weight });
     }
@@ -764,13 +792,13 @@ async function lookupOnline(query) {
 const aiCache = new Map();
 function lookupAI(query) {
   const key = norm(query).join(" ");
-  if (!aiCache.has(key)) aiCache.set(key, withTimeout(lookupAIRaw(query), 25000, null).then(r => { if (!r) aiCache.delete(key); return r; }));
+  if (!aiCache.has(key)) { const ctl = new AbortController(); aiCache.set(key, withTimeout(lookupAIRaw(query, ctl.signal), 25000, null, "food lookup " + key).then(r => { ctl.abort(); if (!r) aiCache.delete(key); return r; })); }
   return aiCache.get(key);
 }
-async function lookupAIRaw(query) {
+async function lookupAIRaw(query, signal) {
   const sample = window.claude?.use ? await claude.use("sample") : null; if (!sample) return null;
   try {
-    const j = await sample.json(`Give typical nutrition values per 100 g for the food "${query}" as it is usually bought (raw unless the name says cooked), averaged from standard food composition tables. Reply with JSON only: {"name": short English food name, "kcal": number, "p": protein grams, "c": carbohydrate grams, "f": fat grams}. If "${query}" is not a food, reply {"name": null}.`, { modelTier: "quick" });
+    const j = await sample.json(`Give typical nutrition values per 100 g for the food "${query}" as it is usually bought (raw unless the name says cooked), averaged from standard food composition tables. Reply with JSON only: {"name": short English food name, "kcal": number, "p": protein grams, "c": carbohydrate grams, "f": fat grams}. If "${query}" is not a food, reply {"name": null}.`, { modelTier: "quick", signal });
     const ok = x => typeof x === "number" && isFinite(x) && x >= 0 && x <= 900;
     if (!j || !j.name || !["kcal", "p", "c", "f"].every(k => ok(j[k]))) return null;
     return { name: String(j.name).slice(0, 60), kcal: Math.round(j.kcal), p: j.p, c: j.c, f: j.f, src: "estimated by Claude from typical values" };
@@ -796,7 +824,7 @@ const foodDatalist = () => `<datalist id="foods">${[...new Set([...state.ingredi
 
 // ---------- dialog helper ----------
 const dlg = document.getElementById("dlg");
-function openDlg(html, onOpen) { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); onOpen && onOpen(dlg); }
+function openDlg(html, onOpen) { dlg.innerHTML = html; diag("sheet", (html.match(/<h3>(.*?)<\/h3>/) || [])[1] || ""); if (!dlg.open) dlg.showModal(); onOpen && onOpen(dlg); }
 function closeDlg() { dlg.close(); }
 dlg.addEventListener("click", e => { if (e.target === dlg) closeDlg(); });
 dlg.addEventListener("focusin", e => { if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) setTimeout(() => e.target.scrollIntoView({ block: "center", behavior: "smooth" }), 300); });
@@ -844,6 +872,9 @@ const LOGO = `<svg class="logo" viewBox="0 0 40 40" width="34" height="34" aria-
 const TABS = [["today", "Today", "plate"], ["chat", "Assistant", "spark"], ["recipes", "Recipes", "pot"], ["shop", "Shop", "basket"], ["weight", "Weight", "scale"]];
 // Goals, foods and backup live on the profile page, opened from the round button at the top.
 function render() {
+  const r0 = performance.now(); try { renderInner(); } finally { const ms = performance.now() - r0; if (ms > 150) diag("slow-render", `${ui.tab} ${Math.round(ms)}ms`); }
+}
+function renderInner() {
   calcGen++;
   const inProfile = ui.tab === "goals" || ui.tab === "ingredients";
   document.getElementById("top").innerHTML = `<span class="brand">${LOGO}My kitchen</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${inProfile ? I.close : I.person}</button>`;
@@ -899,7 +930,7 @@ function overallCard() {
 
 async function allDayTotals() {
   const tot = {};
-  if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { const es = x.data().entries || []; tot[x.id] = { t: es.reduce((a, e) => add(a, e), ZERO()), n: es.length }; }); } catch {}
+  if (db) try { const q = await withTimeout(db.collection("days").limit(1000).get(), 8000, { docs: [] }, "load all days"); q.docs.forEach(x => { const es = x.data().entries || []; tot[x.id] = { t: es.reduce((a, e) => add(a, e), ZERO()), n: es.length }; }); } catch {}
   for (const d of Object.keys(state.log)) if (!db || loadedDays.has(d)) tot[d] = { t: dayTotal(d), n: dayEntries(d).length };
   return tot;
 }
@@ -1275,19 +1306,26 @@ function scanLabel(afterSave, fromGallery = false) {
   inp.onchange = async () => {
     const file = inp.files[0]; if (!file) return;
     if (file.size > (ui.scan.maxInputBytes || 20e6)) { notice("That photo is too large. Try again with a smaller one."); return; }
-    openDlg(`<h3>Reading the label…</h3><p class="muted">Claude is reading the nutrition table.</p><div class="typing" style="margin:8px 0 4px"><i></i><i></i><i></i></div>`);
+    const ctl = new AbortController(), timer = setTimeout(() => { diag("timeout", "scan label"); ctl.abort(); }, 60000);
+    openDlg(`<h3>Reading the label…</h3><p class="muted">Claude is reading the nutrition table. This usually takes a few seconds.</p><div class="typing" style="margin:8px 0 4px"><i></i><i></i><i></i></div><div class="foot"><button type="button" id="scanCancel">Cancel</button></div>`,
+      d => d.querySelector("#scanCancel").onclick = () => { ctl.abort(); closeDlg(); });
     let j;
     try {
       j = await ui.ai.json(`The image is a photo of a food or drink product's packaging, taken by the user to add it to their calorie tracker.
 Read the product name (with brand) and the nutrition table. Reply with ONLY this JSON:
 {"name": "Brand product name", "unit": "g" or "ml", "per100": {"kcal": number, "p": protein g, "c": carbohydrate g, "f": fat g},
  "serving": {"grams": number, "name": "bar"} or null, "note": "short remark, or empty"}
-Rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide by 4.184. If only per-serving values are printed, convert to per 100 g using the serving size. "serving" is the size of one piece/portion if the pack states it (a bar, a scoop, a slice, a can, a bottle, a biscuit), else null; "name" is a short singular word for it. Use "carbohydrate" (not "of which sugars") and "fat" (not "of which saturates"). If a number is unreadable, give your best estimate and say so in "note". If no nutrition table is visible, reply {"name": null, "note": "what you can see instead"}.`, { images: [file], cache: false });
+Rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide by 4.184. If only per-serving values are printed, convert to per 100 g using the serving size. "serving" is the size of one piece/portion if the pack states it (a bar, a scoop, a slice, a can, a bottle, a biscuit), else null; "name" is a short singular word for it. Use "carbohydrate" (not "of which sugars") and "fat" (not "of which saturates"). If a number is unreadable, give your best estimate and say so in "note". If no nutrition table is visible, reply {"name": null, "note": "what you can see instead"}.`, { images: [file], cache: false, signal: ctl.signal });
     } catch (e) {
+      clearTimeout(timer);
+      if (e?.code === "cancelled" && !dlg.open) return; // the user tapped Cancel
       closeDlg();
+      if (e?.code === "cancelled") { notice("Reading the label took too long. Try again, ideally with a closer photo."); return; }
       notice({ images_unavailable: "This version of the Claude app can't send photos to the page yet. Open the app in a browser at claude.ai, or update the Claude app, and try again.", image_rejected: "That photo couldn't be read. Try a JPEG or PNG under 20 MB.", rate_limited: "Too many requests for now. Try again in a minute.", not_granted: "This app isn't allowed to use Claude. Allow it when asked, then try again." }[e?.code] || "Couldn't read the label. Try again with a sharper photo of the nutrition table.");
       return;
     }
+    clearTimeout(timer);
+    if (!dlg.open) return; // cancelled while the answer was arriving
     const ok = x => typeof x === "number" && isFinite(x) && x >= 0 && x <= 950, v = j?.per100 || {};
     if (!j?.name || !["kcal", "p", "c", "f"].every(k => ok(v[k]))) {
       closeDlg(); notice(`No nutrition table found${j?.note ? `: ${j.note}` : ""}. Take the photo straight on, close to the table.`); return;
@@ -1477,12 +1515,15 @@ async function aiSend(text) {
   const input = [{ role: "user", content: AI_RULES }, ...turns];
   try {
     if (!ui.ai) throw { code: ui.ai === null ? "capability_disabled" : "connecting" };
-    const j = await ui.ai.json(input, { cache: false });
+    const ctl = ui.chatCtl = new AbortController(), timer = setTimeout(() => { diag("timeout", "assistant reply"); ui.chatTimedOut = true; ctl.abort(); }, 90000);
+    ui.chatTimedOut = false;
+    let j; try { j = await ui.ai.json(input, { cache: false, signal: ctl.signal }); } finally { clearTimeout(timer); ui.chatCtl = null; }
     const say = typeof j?.say === "string" ? j.say : "";
     const proposal = j && typeof j.proposal === "object" ? aiProposal(j.proposal) : null;
     ui.chat.push({ role: "assistant", text: say || (proposal ? "Here's what I've got:" : "Sorry, I didn't get that."), raw: JSON.stringify(j), proposal });
   } catch (e) {
     ui.chat.pop(); ui.chatDraft = text;
+    if (e?.code === "cancelled") { ui.chatErr = ui.chatTimedOut ? "Claude took too long to answer. Send it again." : ""; ui.chatBusy = false; render(); return; }
     ui.chatErr = { rate_limited: "Too many messages for now. Wait a minute and send again.", session_expired: "Your Claude session expired. Sign in again, then send.", not_granted: "This app isn't allowed to use Claude. Allow it when asked, then send again.", invalid_json: "The answer came back garbled. Send it again.", connecting: "Still connecting to Claude. Send again in a second.", refused: "Claude couldn't answer that. Try rewording it." }[e?.code]
       || (["sampling_disabled", "not_declared", "capability_disabled", "capability_removed"].includes(e?.code) ? "The assistant isn't available in this view." : "Something went wrong reaching Claude. Send it again.");
   }
@@ -1667,7 +1708,7 @@ function viewChat() {
     ${ui.chatBusy ? `<div class="msg assistant" aria-label="Thinking"><span class="typing"><i></i><i></i><i></i></span></div>` : ""}
   </div>
   ${ui.chatErr ? `<p class="sync" role="alert">${esc(ui.chatErr)}</p>` : ""}
-  <form class="composer" data-form="chat"><textarea id="chatIn" rows="1" placeholder="I made chilli, 4 portions…" aria-label="Message" ${ui.chatBusy ? "disabled" : ""}>${esc(ui.chatDraft)}</textarea><button class="primary" aria-label="Send" ${ui.chatBusy ? "disabled" : ""}>${I.send}</button></form>
+  <form class="composer" data-form="chat"><textarea id="chatIn" rows="1" placeholder="I made chilli, 4 portions…" aria-label="Message" ${ui.chatBusy ? "disabled" : ""}>${esc(ui.chatDraft)}</textarea>${ui.chatBusy ? `<button type="button" class="primary" data-act="chatStop" aria-label="Stop">${I.close}</button>` : `<button class="primary" aria-label="Send">${I.send}</button>`}</form>
   <p class="muted" style="text-align:center;font-size:.76rem;margin:6px 0 0">Logs go to ${ui.date === today() ? "today" : niceDate(ui.date)}. Values are estimates; fix any amount before saving.</p>`;
 }
 
@@ -1682,7 +1723,8 @@ const actions = {
   calendar: () => calendarDialog(),
   aiApply: v => aiApply(v),
   aiAddItem: v => aiAddItem(v),
-  aiReset: () => { ui.chat = []; ui.chatErr = ""; },
+  aiReset: () => { ui.chatCtl?.abort(); ui.chat = []; ui.chatErr = ""; ui.chatBusy = false; },
+  chatStop: () => { ui.chatCtl?.abort(); },
   recCat: v => { ui.recCat = v; },
   wRange: v => { ui.wRange = v; },
   wDel: async v => { if (await ask(`Delete the weigh-in from ${niceDate(v)}?`)) { delete state.weight[v]; save(); render(); } },
@@ -1717,7 +1759,7 @@ const actions = {
   delRecipe: async v => { if (await ask("Delete this recipe? Days you already logged keep their numbers.")) { state.recipes = state.recipes.filter(x => x.id !== v); delete state.shop.plan[v]; save(); render(); } },
   export: async () => {
     // Backup includes every logged day, so fetch the ones not loaded yet.
-    if (db) try { (await db.collection("days").limit(1000).get()).docs.forEach(x => { if (!loadedDays.has(x.id)) { state.log[x.id] = structuredClone(x.data().entries || []); loadedDays.add(x.id); synced["days/" + x.id] = canon({ entries: state.log[x.id] }); } }); } catch {}
+    if (db) try { (await withTimeout(db.collection("days").limit(1000).get(), 10000, { docs: [] }, "export days")).docs.forEach(x => { if (!loadedDays.has(x.id)) { state.log[x.id] = structuredClone(x.data().entries || []); loadedDays.add(x.id); synced["days/" + x.id] = canon({ entries: state.log[x.id] }); } }); } catch {}
     const data = JSON.stringify(state, null, 2), filename = `calorie-backup-${today()}.json`;
     const dl = window.claude?.use ? await claude.use("downloads") : null;
     if (dl) { try { await dl.save({ filename, data }); } catch (e) { if (e.code !== "declined") notice("The backup couldn't be saved here."); } return; }
@@ -1742,6 +1784,7 @@ document.addEventListener("click", e => {
   if (e.target.closest("[data-close]")) return closeDlg();
   const el = e.target.closest("[data-act]");
   if (!el || el.tagName === "INPUT") return;
+  diag("tap", el.dataset.act + (el.dataset.v ? ":" + String(el.dataset.v).slice(0, 30) : ""));
   if (el.dataset.act === "date") return goToDate(el.dataset.v);
   try {
     const r = actions[el.dataset.act]?.(el.dataset.v);
@@ -1751,7 +1794,7 @@ document.addEventListener("click", e => {
 });
 // If anything throws, keep the app usable: say so and redraw instead of freezing.
 function recover(err) {
-  console.error(err);
+  console.error(err); diag("error", (err && (err.stack || err.message || err.code)) || err);
   try { toast("Something went wrong. Try that again."); if (!dlg.open) render(); } catch {}
 }
 addEventListener("error", e => recover(e.error || e.message));
@@ -1803,7 +1846,8 @@ document.addEventListener("submit", e => {
 
 render();
 connect();
-document.addEventListener("visibilitychange", () => { if (!document.hidden && !dlg.open) safeRender(); });
+document.addEventListener("visibilitychange", () => { diag(document.hidden ? "hidden" : "visible"); if (!document.hidden && !dlg.open) safeRender(); });
+diag("start", APP_VERSION);
 </script>
 </body>
 </html>
