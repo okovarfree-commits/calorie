@@ -402,7 +402,7 @@ function withTimeout(promise, ms, fallback, label) {
 // ---------- diagnostics ----------
 // A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
 // account database every few seconds, so a "it got stuck" report can be traced afterwards.
-const APP_VERSION = "2026-10-13b";
+const APP_VERSION = "2026-10-13c";
 const DEVICE = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "phone" : "computer";
 const DIAG = []; let diagDirty = false, diagProblem = false, diagLastWrite = 0;
 function diag(ev, detail = "") {
@@ -531,17 +531,28 @@ async function connect() {
   const handle = await claude.use("db"); if (!handle) return;
   ui.loading = true; render();
   try {
-    const snap = await withTimeout(handle.doc("app/settings").get(), 10000, TIMEOUT, "load settings");
+    // Fetch everything the first screen needs at once instead of one request after another.
+    const day = ui.date;
+    const [snap, sh, wt, dy] = await Promise.all([
+      withTimeout(handle.doc("app/settings").get(), 10000, TIMEOUT, "load settings"),
+      withTimeout(handle.doc("app/shopping").get(), 8000, { exists: false }, "load shopping"),
+      withTimeout(handle.doc("app/weight").get(), 8000, { exists: false }, "load weight"),
+      withTimeout(handle.doc("days/" + day).get(), 8000, null, "load day").catch(() => null),
+    ]);
     if (snap === TIMEOUT) throw new Error("timeout");
     db = handle;
+    let dayDone = false;
     if (snap.exists) {
       state.log = {}; applySettings(snap.data());
-      const sh = await withTimeout(handle.doc("app/shopping").get(), 8000, { exists: false }, "load shopping");
       state.shop = sh.exists ? { ...emptyShop(), ...structuredClone(sh.data()) } : emptyShop();
       synced["app/shopping"] = canon(state.shop);
-      const wt = await withTimeout(handle.doc("app/weight").get(), 8000, { exists: false }, "load weight");
       state.weight = wt.exists ? structuredClone(wt.data().entries || {}) : {};
       synced["app/weight"] = canon({ entries: state.weight });
+      if (dy && ui.date === day) {
+        const path = "days/" + day;
+        if (dy.exists) { state.log[day] = structuredClone(dy.data().entries || []); synced[path] = canon({ entries: state.log[day] }); } else synced[path] = null;
+        loadedDays.add(day); dayDone = true;
+      }
     }
     else {
       // First run in this account: carry over anything saved in this browser.
@@ -562,7 +573,8 @@ async function connect() {
       state.weight = structuredClone(sn.data().entries || {}); synced["app/weight"] = canon({ entries: state.weight });
       if (ui.tab === "weight" && !dlg.open && !ui.loading) safeRender();
     }, () => {});
-    await withTimeout(watchDay(ui.date), 8000);
+    // Today's log is already in hand; the live subscription only picks up later changes.
+    if (dayDone) watchDay(day); else await withTimeout(watchDay(ui.date), 8000);
     setTimeout(() => { loadSummary(); handle.doc("app/summary").onSnapshot(sn => { if (sn.exists) state.sum = { ...(state.sum || {}), ...(sn.data().days || {}) }; }, () => {}); }, 1500);
   } catch { syncNotice("Couldn't reach your saved data. Check your connection and reload the app."); }
   ui.loading = false; render();
@@ -909,11 +921,14 @@ const TABS = [["today", "Today", "plate"], ["chat", "Assistant", "spark"], ["rec
 function render() {
   const r0 = performance.now(); try { renderInner(); } finally { const ms = performance.now() - r0; if (ms > 150) diag("slow-render", `${ui.tab} ${Math.round(ms)}ms`); }
 }
+// Top bar and tab bar only change when the tab does; skip rebuilding them otherwise.
+const lastHtml = {};
+function setHtml(id, html) { if (lastHtml[id] === html) return; lastHtml[id] = html; document.getElementById(id).innerHTML = html; }
 function renderInner() {
   calcGen++;
   const inProfile = ui.tab === "goals" || ui.tab === "ingredients";
-  document.getElementById("top").innerHTML = `<span class="brand">${LOGO}My kitchen</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${inProfile ? I.close : I.person}</button>`;
-  document.getElementById("nav").innerHTML = `<div class="tabs">${TABS.map(([k, n, ic]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}"${ui.tab === k ? ` aria-current="page"` : ""}><span class="ic">${I[ic]}</span>${n}</button>`).join("")}</div>`;
+  setHtml("top", `<span class="brand">${LOGO}My kitchen</span><button class="me${inProfile ? " on" : ""}" data-act="tab" data-v="${inProfile ? "today" : "goals"}" aria-label="${inProfile ? "Close profile" : "Profile, goals and foods"}">${inProfile ? I.close : I.person}</button>`);
+  setHtml("nav", `<div class="tabs">${TABS.map(([k, n, ic]) => `<button data-act="tab" data-v="${k}" class="${ui.tab === k ? "on" : ""}"${ui.tab === k ? ` aria-current="page"` : ""}><span class="ic">${I[ic]}</span>${n}</button>`).join("")}</div>`);
   const hadFocus = document.activeElement?.id === "chatIn";
   document.getElementById("app").innerHTML = { today: viewToday, chat: viewChat, shop: viewShop, weight: viewWeight, recipes: viewRecipes, ingredients: viewIngredients, goals: viewGoals }[ui.tab]();
   if (ui.tab === "weight") wireWeightChart();
@@ -931,7 +946,14 @@ function dayStatus(t, n) {
   return ok ? "hit" : "miss";
 }
 const addDays = (d, n) => { const x = new Date(d + "T12:00"); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
-const niceDate = d => new Date(d + "T12:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+// Dates are formatted by hand: the browser's date formatter loads locale data and costs ~60 ms on a phone at start-up.
+const WD = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+function fmtDate(d, style) {
+  const x = typeof d === "string" ? new Date(d + "T12:00") : d, m = x.getMonth(), dd = x.getDate();
+  return style === "nice" ? `${WD[x.getDay()]}, ${dd} ${MO[m]}` : style === "dm" ? `${dd} ${MO[m]}` : style === "my" ? `${MO[m]} ’${String(x.getFullYear()).slice(2)}` : `${MONTH[m]} ${x.getFullYear()}`;
+}
+const niceDate = d => fmtDate(d, "nice");
 
 // Totals for every logged day (fetched once per calendar opening; days already open here are fresher).
 // ---------- overall summary (Profile) ----------
@@ -987,7 +1009,7 @@ async function calendarDialog(month) {
       if (st === "hit") hit++; if (st === "miss") miss++;
       cells += `<button type="button" data-day="${id}" class="${st === "none" ? "" : st}${id > now ? " future" : ""}${id === ui.date ? " sel" : ""}" aria-label="${niceDate(id)}${st === "hit" ? ", goal hit" : st === "miss" ? ", goal missed" : ""}">${d}${x && x.n ? `<small>${r(x.t.kcal)}</small>` : ""}</button>`;
     }
-    dlg.innerHTML = `<div class="row between"><button type="button" class="iconbtn" data-m="${prev}" aria-label="Previous month">${I.left}</button><h3 style="margin:0">${first.toLocaleDateString(undefined, { month: "long", year: "numeric" })}</h3><button type="button" class="iconbtn" data-m="${next}" aria-label="Next month">${I.right}</button></div>
+    dlg.innerHTML = `<div class="row between"><button type="button" class="iconbtn" data-m="${prev}" aria-label="Previous month">${I.left}</button><h3 style="margin:0">${fmtDate(first, "month")}</h3><button type="button" class="iconbtn" data-m="${next}" aria-label="Next month">${I.right}</button></div>
       <div class="cal">${["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(w => `<span class="wd">${w}</span>`).join("")}${"<span></span>".repeat(lead)}${cells}</div>
       <div class="legend"><span><i style="background:var(--ok-bg);box-shadow:inset 0 0 0 1.5px var(--accent)"></i>Goal hit ${hit}</span><span><i style="background:var(--bad-bg);box-shadow:inset 0 0 0 1.5px var(--danger)"></i>Missed ${miss}</span><span><i></i>Not logged</span></div>
       <p class="muted" style="margin:10px 0 0">${GOAL_MODES[state.goals.mode || "min"]}: ${r(state.goals.kcal)} kcal. Change it in Profile.</p>
@@ -1036,11 +1058,13 @@ const CATS = [
   ["protein", "High protein", "30+ g protein, or 30%+ of its calories from protein", m => m.p >= 30 || (m.kcal > 0 && m.p * 4 / m.kcal >= 0.3)],
   ["carb", "High carb", "45%+ of its calories from carbs", m => m.kcal > 0 && m.c * 4 / m.kcal >= 0.45],
 ];
+// Plain case-insensitive A–Z: the browser's locale-aware sorting loads locale data first, which cost ~100 ms on a phone.
+const byName = (a, b) => { const x = a.toLowerCase(), y = b.toLowerCase(); return x < y ? -1 : x > y ? 1 : 0; };
 const recipeCats = rc => { const m = perServing(rc); return CATS.filter(c => c[3](m)).map(c => c[0]); };
 
 function recipeCards() {
   const q = norm(ui.recQ || ""), cat = ui.recCat || "all";
-  const list = [...state.recipes].sort((a, b) => (b.fav || 0) - (a.fav || 0) || a.name.localeCompare(b.name))
+  const list = [...state.recipes].sort((a, b) => (b.fav || 0) - (a.fav || 0) || byName(a.name, b.name))
     .filter(rc => (cat === "all" || recipeCats(rc).includes(cat)) && q.every(w => norm(rc.name).some(x => x.startsWith(w))));
   if (!list.length) return `<p class="muted" style="text-align:center;margin:28px 0">No recipes ${cat === "all" ? "" : `in ${CATS.find(c => c[0] === cat)[1].toLowerCase()} `}${q.length ? `matching "${esc(ui.recQ)}"` : ""}.</p>`;
   return list.map(rc => { const t = recipeTotal(rc), s = perServing(rc), cs = recipeCats(rc); return `<article class="card">
@@ -1069,7 +1093,7 @@ function viewRecipes() {
 }
 
 function viewIngredients() {
-  const list = [...state.ingredients].sort((a, b) => a.name.localeCompare(b.name));
+  const list = [...state.ingredients].sort((a, b) => byName(a.name, b.name));
   return `<button class="small" data-act="tab" data-v="goals" style="margin:2px 0 4px;padding-left:8px">${I.left}Profile</button>
   <div class="page-head"><h2>My foods</h2><div class="row">${ui.scan ? `<button class="small" data-act="scanIng" aria-label="Scan a package label">${I.camera}Scan</button>` : ""}<button class="small primary" data-act="editIng">${I.plus}New</button></div></div>
   <p class="muted">Values per 100 g (or 100 ml). Foods you type into recipes land here; edit any of them to match the package label.</p>
@@ -1132,7 +1156,7 @@ function wTile(label, days) {
   if (!ch) return `<div class="wt"><span class="wt-l">${label}</span><b>–</b><span class="wt-s">not enough data</span></div>`;
   const up = ch.d > 0.05, down = ch.d < -0.05, good = mode === "min" ? up : mode === "max" ? down : !up && !down;
   const cls = !up && !down ? "" : good ? " good" : " bad";
-  return `<div class="wt${cls}"><span class="wt-l">${label}</span><b>${up ? "▲ +" : down ? "▼ −" : ""}${fmtKg(Math.abs(ch.d))}<small> kg</small></b><span class="wt-s">${ch.partial ? `since ${new Date(ch.since + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" })}` : up ? "gained" : down ? "lost" : "no change"}</span></div>`;
+  return `<div class="wt${cls}"><span class="wt-l">${label}</span><b>${up ? "▲ +" : down ? "▼ −" : ""}${fmtKg(Math.abs(ch.d))}<small> kg</small></b><span class="wt-s">${ch.partial ? `since ${fmtDate(ch.since, "dm")}` : up ? "gained" : down ? "lost" : "no change"}</span></div>`;
 }
 // Round numbers for the y axis (step 0.2 / 0.5 / 1 / 2 / 5 kg).
 function niceTicks(lo, hi) {
@@ -1153,7 +1177,7 @@ function weightChart() {
   const area = `${line}L${x(pts[pts.length - 1][0]).toFixed(1)},${H - B}L${x(pts[0][0]).toFixed(1)},${H - B}Z`;
   // x labels: start, middle, today
   const xl = [start, addDays(start, Math.round(range[2] / 2)), today()];
-  const lab = d => range[0] === "year" ? new Date(d + "T12:00").toLocaleDateString(undefined, { month: "short", year: "2-digit" }) : new Date(d + "T12:00").toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  const lab = d => fmtDate(d, range[0] === "year" ? "my" : "dm");
   const [ld, lv] = pts[pts.length - 1];
   ui.wPts = pts.map(([d, v]) => ({ d, v, x: x(d), y: y(v) }));
   return `<div class="wchart"><svg id="wsvg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Weight over the last ${range[1].toLowerCase()}, from ${fmtKg(pts[0][1])} to ${fmtKg(lv)} kg">
@@ -1224,7 +1248,7 @@ function shoppingList() {
     const label = pc ? countedName(Math.max(1, Math.ceil(qty - 0.05)), pc, base) : `${Math.ceil(x.grams / step) * step} g ${base}`;
     const note = pc && Math.abs(qty - Math.round(qty)) > 0.05 ? `${r(qty, 1)} needed` : pc ? `${r(x.grams)} g` : "";
     return { key: x.i.id, name: x.i.name, label, note, from: [...x.from].join(", ") };
-  }).sort((a, b) => a.name.localeCompare(b.name));
+  }).sort((a, b) => byName(a.name, b.name));
 }
 
 // "3 onions", "2 bell peppers", "5 cloves garlic", "2 cans kidney beans".
@@ -1243,7 +1267,7 @@ function shopResults() {
 }
 
 function viewShop() {
-  const sh = state.shop, list = shoppingList(), recs = [...state.recipes].sort((a, b) => a.name.localeCompare(b.name));
+  const sh = state.shop, list = shoppingList(), recs = [...state.recipes].sort((a, b) => byName(a.name, b.name));
   const planned = recs.filter(rc => sh.plan[rc.id] > 0).length;
   const left = list.filter(x => !sh.checked[x.key]).length + sh.extra.filter(x => !x.done).length;
   const item = (key, label, sub, done, act) => `<label class="check${done ? " done" : ""}"><input type="checkbox" data-act="${act}" data-v="${esc(key)}" ${done ? "checked" : ""}><span class="what"><b>${label}</b>${sub ? `<div class="muted">${sub}</div>` : ""}</span></label>`;
