@@ -402,7 +402,7 @@ function withTimeout(promise, ms, fallback, label) {
 // ---------- diagnostics ----------
 // A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
 // account database every few seconds, so a "it got stuck" report can be traced afterwards.
-const APP_VERSION = "2026-10-13";
+const APP_VERSION = "2026-10-13b";
 const DEVICE = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "phone" : "computer";
 const DIAG = []; let diagDirty = false, diagProblem = false, diagLastWrite = 0;
 function diag(ev, detail = "") {
@@ -1027,7 +1027,7 @@ function viewToday() {
   <section class="card"><div class="sum">${ring}<div class="macros">${mrow("Protein", "p", "g")}${mrow("Carbs", "c", "g")}${mrow("Fat", "f", "g")}</div></div>
     <div class="sum-foot"><span><b>${r(t.kcal)}</b> eaten of ${r(g.kcal)} kcal</span>${st === "hit" ? `<span class="pill hit">Goal hit</span>` : st === "miss" ? `<span class="pill miss">Goal missed</span>` : ""}</div></section>
   ${meals}
-  ${ui.scan ? `<div style="height:64px"></div><button class="fab" data-act="scanToday" aria-label="Scan a package label">${I.camera}</button>` : ""}`;
+  ${ui.scan ? `<div style="height:64px"></div><button class="fab" data-act="scanToday" aria-label="Take a photo of food or a label">${I.camera}</button>` : ""}`;
 }
 
 // Categories worked out from each recipe's macros per serving (a recipe can be in several).
@@ -1272,7 +1272,7 @@ function entryDialog(meal, preRecipe, preFood) {
   const favs = state.recipes.filter(x => x.fav);
   openDlg(`<h3>${meal === "Snack" ? "Log food" : `Add to ${meal}`}</h3>
   ${favs.length ? `<p class="eyebrow" style="margin-top:6px">Favourites</p><div class="chips" id="favs">${favs.map(x => `<button type="button" class="chip" data-fav="${x.id}">${I.star.replace("<svg", `<svg style="color:var(--c);width:15px;height:15px"`)}${esc(x.name)}</button>`).join("")}</div>` : ""}
-  ${ui.scan ? `<div class="row" style="margin-top:12px"><button type="button" id="scanBtn" class="grow">${I.camera}Scan a package label</button><button type="button" id="scanPick" class="small" style="min-height:44px">From photos</button></div>` : ""}
+  ${ui.scan ? `<div class="row" style="margin-top:12px"><button type="button" id="scanBtn" class="grow">${I.camera}Photo of food or label</button><button type="button" id="scanPick" class="small" style="min-height:44px">From photos</button></div>` : ""}
   <form id="f"><label>What are you adding?</label><select name="type"><option value="recipe">Recipe (servings)</option><option value="ingredient">Food (grams or pieces)</option><option value="quick">Quick add (manual)</option></select>
   <div id="fields"></div><label>Meal</label><select name="meal">${MEALS.map(m => `<option value="${m}" ${m === meal ? "selected" : ""}>${mealName(m)}</option>`).join("")}</select>
   <div class="foot"><button type="button" data-close>Cancel</button><button class="primary">Add</button></div></form>`, d => {
@@ -1293,8 +1293,8 @@ function entryDialog(meal, preRecipe, preFood) {
     f.meal.addEventListener("change", () => { if (f.type.value === "recipe" && f.ref && !preRecipe) { const def = mealDefault(f.meal.value); if (def) f.ref.value = def; } syncDef(); });
     if (preFood) f.type.value = "ingredient";
     f.type.onchange = draw; draw();
-    d.querySelector("#scanBtn")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name)));
-    d.querySelector("#scanPick")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name), true));
+    d.querySelector("#scanBtn")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name), false, meal));
+    d.querySelector("#scanPick")?.addEventListener("click", () => scanLabel(food => entryDialog(meal, null, food.name), true, meal));
     // When the typed food is counted in pieces, offer pieces as the unit.
     fields.addEventListener("change", e => {
       if (e.target.name !== "food") return;
@@ -1335,39 +1335,78 @@ function entryDialog(meal, preRecipe, preFood) {
 // ---------- scan a package label ----------
 const DEFAULT_SCAN = { maxCount: 1, maxInputBytes: 20e6, mediaTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"] };
 // Take or pick a photo of the nutrition table; Claude reads it and the "New food" sheet opens pre-filled to check.
-function scanLabel(afterSave, fromGallery = false) {
-  if (!ui.scan || !ui.ai) { notice("Scanning labels needs the app open in Claude (claude.ai or the Claude app)."); return; }
+// Shrink a phone photo (often 3-12 MB) to ~1600 px JPEG before sending: much faster on mobile data.
+// Falls back to the original file if the browser can't decode it here.
+async function shrinkPhoto(file) {
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height)), c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height); bmp.close?.();
+    const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.85));
+    return blob && blob.size < file.size ? blob : file;
+  } catch { return file; }
+}
+
+// Snap a nutrition label OR a meal. Claude decides which:
+//  - label -> the "Check the label" sheet pre-filled as a new food (afterSave then logs it)
+//  - food  -> the Assistant's editable log card with predicted macros for what's in the photo
+function scanLabel(afterSave, fromGallery = false, meal) {
+  if (!ui.scan || !ui.ai) { notice("Photos need the app open in Claude (claude.ai or the Claude app)."); return; }
+  // The picker is attached to the page while in use: some phones never return the photo from a detached one.
   const inp = document.createElement("input");
-  inp.type = "file";
-  // capture="environment" opens the phone's back camera straight away; the gallery option leaves it out.
+  inp.type = "file"; inp.hidden = true; document.body.append(inp);
+  // capture="environment" opens the phone's back camera straight away; the photos option leaves it out.
   if (fromGallery) inp.accept = (ui.scan.mediaTypes || ["image/jpeg", "image/png"]).join(",");
   else { inp.accept = "image/*"; inp.setAttribute("capture", "environment"); }
-  inp.onchange = async () => {
-    const file = inp.files[0]; if (!file) return;
-    if (file.size > (ui.scan.maxInputBytes || 20e6)) { notice("That photo is too large. Try again with a smaller one."); return; }
-    const ctl = new AbortController(), timer = setTimeout(() => { diag("timeout", "scan label"); ctl.abort(); }, 60000);
-    openDlg(`<h3>Reading the label…</h3><p class="muted">Claude is reading the nutrition table. This usually takes a few seconds.</p><div class="typing" style="margin:8px 0 4px"><i></i><i></i><i></i></div><div class="foot"><button type="button" id="scanCancel">Cancel</button></div>`,
+  const cleanup = () => setTimeout(() => inp.remove(), 0);
+  inp.addEventListener("cancel", cleanup);
+  inp.addEventListener("change", async () => {
+    const original = inp.files[0]; cleanup(); if (!original) return;
+    diag("photo", `${Math.round(original.size / 1024)} KB ${original.type || "?"}`);
+    const ctl = new AbortController(), timer = setTimeout(() => { diag("timeout", "photo"); ctl.abort(); }, 75000);
+    openDlg(`<h3>Looking at your photo…</h3><p class="muted">Claude is reading the label or working out what's on the plate. This usually takes a few seconds.</p><div class="typing" style="margin:8px 0 4px"><i></i><i></i><i></i></div><div class="foot"><button type="button" id="scanCancel">Cancel</button></div>`,
       d => d.querySelector("#scanCancel").onclick = () => { ctl.abort(); closeDlg(); });
+    const file = await shrinkPhoto(original);
+    if (file.size > (ui.scan.maxInputBytes || 20e6)) { closeDlg(); notice("That photo is too large. Try again with a smaller one."); return; }
+    const h = new Date().getHours(), when = meal || (h < 11 ? "Breakfast" : h < 16 ? "Lunch" : h < 22 ? "Dinner" : "Snack");
     let j;
     try {
-      j = await ui.ai.json(`The image is a photo of a food or drink product's packaging, taken by the user to add it to their calorie tracker.
-Read the product name (with brand) and the nutrition table. Reply with ONLY this JSON:
-{"name": "Brand product name", "unit": "g" or "ml", "per100": {"kcal": number, "p": protein g, "c": carbohydrate g, "f": fat g},
+      j = await ui.ai.json(`The image is a photo the user just took for their calorie tracker. It is EITHER a food/drink package's nutrition label, OR a photo of food (a meal, a plate, a snack, a drink).
+If it shows a nutrition label/table, reply with ONLY:
+{"type": "label", "name": "Brand product name", "unit": "g" or "ml", "per100": {"kcal": number, "p": protein g, "c": carbohydrate g, "f": fat g},
  "serving": {"grams": number, "name": "bar"} or null, "note": "short remark, or empty"}
-Rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide by 4.184. If only per-serving values are printed, convert to per 100 g using the serving size. "serving" is the size of one piece/portion if the pack states it (a bar, a scoop, a slice, a can, a bottle, a biscuit), else null; "name" is a short singular word for it. Use "carbohydrate" (not "of which sugars") and "fat" (not "of which saturates"). If a number is unreadable, give your best estimate and say so in "note". If no nutrition table is visible, reply {"name": null, "note": "what you can see instead"}.`, { images: [file], cache: false, signal: ctl.signal });
+Label rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide by 4.184. If only per-serving values are printed, convert to per 100 g using the serving size. "serving" is one piece/portion if the pack states it (a bar, a scoop, a slice, a can, a bottle), else null; "name" is a short singular word for it. Use total carbohydrate and total fat. If a number is unreadable, estimate it and say so in "note".
+If it shows food, identify each food or component and estimate the portion from what you see (plate size, cutlery, typical servings), then reply with ONLY:
+{"type": "food", "say": "one short line with your estimate, e.g. 'Looks like spaghetti bolognese, about 650 kcal.'", "items": [
+  {"name": "Spaghetti (cooked)", "grams": 250, "per100": {"kcal": 158, "p": 5.8, "c": 31, "f": 0.9}},
+  {"name": "Bolognese sauce", "grams": 180, "per100": {"kcal": 110, "p": 7, "c": 5, "f": 7}}]}
+Food rules: split a dish into its main components with grams and typical per-100 g values; for countable things you may add "pieces"; for a branded or takeaway item you recognise (e.g. a Big Mac) you may instead give {"name", "portion": "1 burger", "count": 1, "total": {"kcal","p","c","f"}}.
+If it is neither, reply {"type": "none", "note": "what you can see"}.`, { images: [file], cache: false, signal: ctl.signal });
     } catch (e) {
       clearTimeout(timer);
       if (e?.code === "cancelled" && !dlg.open) return; // the user tapped Cancel
-      closeDlg();
-      if (e?.code === "cancelled") { notice("Reading the label took too long. Try again, ideally with a closer photo."); return; }
-      notice({ images_unavailable: "This version of the Claude app can't send photos to the page yet. Open the app in a browser at claude.ai, or update the Claude app, and try again.", image_rejected: "That photo couldn't be read. Try a JPEG or PNG under 20 MB.", rate_limited: "Too many requests for now. Try again in a minute.", not_granted: "This app isn't allowed to use Claude. Allow it when asked, then try again." }[e?.code] || "Couldn't read the label. Try again with a sharper photo of the nutrition table.");
+      closeDlg(); diag("photo-error", e?.code || e?.message || e);
+      if (e?.code === "cancelled") { notice("That took too long. Try again, ideally with a closer, brighter photo."); return; }
+      notice({ images_unavailable: "Photos can't be sent to Claude from this view. Update the Claude app or open the app at claude.ai, then try again.", image_rejected: "That photo couldn't be read. Try again with a normal camera photo.", rate_limited: "Too many requests for now. Try again in a minute.", not_granted: "The app needs your permission to send photos to Claude. Allow it when asked, then try again." }[e?.code] || "Couldn't read that photo. Try again with a sharper, closer shot.");
       return;
     }
     clearTimeout(timer);
     if (!dlg.open) return; // cancelled while the answer was arriving
+    diag("photo-result", j?.type || "?");
+    if (j?.type === "food") {
+      const proposal = aiProposal({ kind: "log", items: (j.items || []).map(x => ({ ...x, meal: when })) });
+      closeDlg();
+      if (!proposal) { notice("Couldn't make out the food. Try a closer photo, or describe it in the Assistant."); return; }
+      proposal.meal = when;
+      ui.chat.push({ role: "user", text: "Sent a photo of my food" });
+      ui.chat.push({ role: "assistant", text: (typeof j.say === "string" && j.say) || "Here's my estimate from the photo. Fix anything that's off, then log it.", raw: JSON.stringify(j), proposal });
+      ui.tab = "chat"; render();
+      return;
+    }
     const ok = x => typeof x === "number" && isFinite(x) && x >= 0 && x <= 950, v = j?.per100 || {};
-    if (!j?.name || !["kcal", "p", "c", "f"].every(k => ok(v[k]))) {
-      closeDlg(); notice(`No nutrition table found${j?.note ? `: ${j.note}` : ""}. Take the photo straight on, close to the table.`); return;
+    if (j?.type === "none" || !j?.name || !["kcal", "p", "c", "f"].every(k => ok(v[k]))) {
+      closeDlg(); notice(`Couldn't find a label or food${j?.note ? `: ${j.note}` : ""}. Try again with the label or plate filling the photo.`); return;
     }
     const sv = j.serving && num(j.serving.grams) > 0 ? j.serving : null, one = sv ? String(sv.name || "serving").trim().toLowerCase().slice(0, 20) : "";
     ingDialog(null, {
@@ -1375,7 +1414,7 @@ Rules: "per100" is per 100 g or 100 ml as printed. If only kJ is printed, divide
       src: `from the package label${j.unit === "ml" ? " (per 100 ml)" : ""}`, pieceG: sv ? num(sv.grams) : 0, piece: one,
       note: j.note || "",
     }, afterSave);
-  };
+  });
   inp.click();
 }
 
