@@ -220,6 +220,7 @@ nav button.on .ic{background:var(--accent-soft)}
 .ov b{font:750 1.35rem/1.2 var(--display);letter-spacing:-.015em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ov b small{font-size:.75rem;font-weight:600;color:var(--muted)}
 .ov.p b{color:var(--p)}
+.ov.wide{grid-column:1/-1}
 
 /* lists */
 .item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:12px 0;border-top:1px solid var(--line)}
@@ -402,7 +403,7 @@ function withTimeout(promise, ms, fallback, label) {
 // ---------- diagnostics ----------
 // A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
 // account database every few seconds, so a "it got stuck" report can be traced afterwards.
-const APP_VERSION = "2026-10-13c";
+const APP_VERSION = "2026-10-29a";
 const DEVICE = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "phone" : "computer";
 const DIAG = []; let diagDirty = false, diagProblem = false, diagLastWrite = 0;
 function diag(ev, detail = "") {
@@ -452,29 +453,32 @@ function save() {
   requestAnimationFrame(() => setTimeout(flushSave, 0));
   setTimeout(flushSave, 250); // fallback if animation frames are paused (background tab, some phone web views)
 }
-// Per-day totals kept in one small "app/summary" document ({ "YYYY-MM-DD": [kcal, p, c, f, items] }),
+// Per-day totals kept in one small "app/summary" document ({ v, days: { "YYYY-MM-DD": [kcal, p, c, f, items, chicken g] } }),
 // so the calendar and the Profile summary read one document instead of every day ever logged.
-const daySum = d => { const t = dayTotal(d), n = dayEntries(d).length; return n ? [Math.round(t.kcal), Math.round(t.p * 10) / 10, Math.round(t.c * 10) / 10, Math.round(t.f * 10) / 10, n] : null; };
+// SUM_V goes up when a column is added; an older summary is then rebuilt once from the saved days.
+const SUM_V = 2;
+const sumRow = es => { const t = es.reduce((a, e) => add(a, e), ZERO()); return [Math.round(t.kcal), Math.round(t.p * 10) / 10, Math.round(t.c * 10) / 10, Math.round(t.f * 10) / 10, es.length, Math.round(es.reduce((g, e) => g + entryChicken(e), 0))]; };
+const daySum = d => { const es = dayEntries(d); return es.length ? sumRow(es) : null; };
 let sumChain = Promise.resolve(), sumReady = null;
 function writeDaySum(d) {
   const v = daySum(d); (state.sum ||= {})[d] = v;
   // Merge just this day (another device may be writing other days); create the document if it isn't there yet.
   sumChain = sumChain.then(() => withTimeout(db.doc("app/summary").update({ days: { [d]: v } }), 15000, TIMEOUT, "save summary"))
     .then(r => { if (r === TIMEOUT) throw 0; })
-    .catch(() => withTimeout(db.doc("app/summary").set({ days: state.sum }), 15000, null, "save summary").catch(() => {}));
+    .catch(() => withTimeout(db.doc("app/summary").set({ v: SUM_V, days: state.sum }), 15000, null, "save summary").catch(() => {}));
 }
 // Load the summary; the first time (or if it is missing) build it once from the saved days.
 function loadSummary() {
   return sumReady ||= (async () => {
     const sn = await withTimeout(db.doc("app/summary").get(), 8000, null, "load summary");
-    if (sn?.exists) { state.sum = { ...(sn.data().days || {}) }; return true; }
+    if (sn?.exists && (sn.data().v || 1) >= SUM_V) { state.sum = { ...(sn.data().days || {}) }; return true; }
     if (sn === null) { sumReady = null; return false; } // timed out: try again next time
     const q = await withTimeout(db.collection("days").limit(1000).get(), 20000, null, "build summary");
     if (!q) { sumReady = null; return false; }
     const sum = {};
-    q.docs.forEach(x => { const es = x.data().entries || []; if (es.length) { const t = es.reduce((a, e) => add(a, e), ZERO()); sum[x.id] = [Math.round(t.kcal), Math.round(t.p * 10) / 10, Math.round(t.c * 10) / 10, Math.round(t.f * 10) / 10, es.length]; } });
+    q.docs.forEach(x => { const es = x.data().entries || []; if (es.length) sum[x.id] = sumRow(es); });
     state.sum = { ...sum, ...(state.sum || {}) };
-    await withTimeout(db.doc("app/summary").set({ days: state.sum }), 15000, null, "save summary").catch(() => {});
+    await withTimeout(db.doc("app/summary").set({ v: SUM_V, days: state.sum }), 15000, null, "save summary").catch(() => {});
     diag("summary-built", Object.keys(sum).length + " days");
     return true;
   })().catch(() => { sumReady = null; return false; });
@@ -630,6 +634,20 @@ function perServing(rec) {
   psCache.set(rec, { g: calcGen, v }); return v;
 }
 const dayEntries = d => state.log[d] || [];
+// ---------- chicken eaten (Profile summary) ----------
+const isChicken = name => /chicken|kuřec|kuře/i.test(name || "") && !/stock|broth|bouillon|vývar/i.test(name);
+// Grams of chicken in one serving of a recipe.
+const recipeChicken = rc => rc.items.reduce((g, it) => { const i = ing(it.ingId); return i && isChicken(i.name) ? g + itemGrams(it) : g; }, 0) / (rc.servings || 1);
+// Grams of chicken in a logged entry: saved with entries logged from now on; older ones are worked out from
+// the recipe with the same name ("2 servings") or, for a chicken food logged on its own, its grams ("200 g").
+function entryChicken(e) {
+  if (typeof e.chk === "number") return e.chk;
+  const amt = e.amount || "", sv = /^([\d.]+) servings?$/.exec(amt), rc = sv && state.recipes.find(x => x.name === e.name);
+  if (rc) return num(sv[1]) * recipeChicken(rc);
+  const g = isChicken(e.name) && /([\d.]+)\s*g\)?$/.exec(amt);
+  return g ? num(g[1]) : 0;
+}
+const dayChicken = d => dayEntries(d).reduce((g, e) => g + entryChicken(e), 0);
 const dayTotal = d => dayEntries(d).reduce((t, e) => add(t, e), ZERO());
 const macroLine = m => `<span class="ml"><span class="k">${r(m.kcal)} kcal</span><span><i class="dot-p">P</i> ${r(m.p, 1)}</span><span><i class="dot-c">C</i> ${r(m.c, 1)}</span><span><i class="dot-f">F</i> ${r(m.f, 1)}</span></span>`;
 const macroMini = m => `<span class="ml"><span><i class="dot-p">P</i> ${r(m.p)}</span><span><i class="dot-c">C</i> ${r(m.c)}</span><span><i class="dot-f">F</i> ${r(m.f)}</span></span>`;
@@ -973,6 +991,7 @@ function overallCard() {
   const sum = list.reduce((a, [, x]) => add(a, x.t), ZERO()), done = list.filter(([d]) => d < today());
   const avgSrc = done.length ? done : list, avg = add(ZERO(), avgSrc.reduce((a, [, x]) => add(a, x.t), ZERO()), 1 / avgSrc.length);
   const hit = done.filter(([, x]) => dayStatus(x.t, x.n) === "hit").length, g = state.goals, big = n => Math.round(n).toLocaleString();
+  const chk = list.reduce((a, [, x]) => a + (x.chk || 0), 0), avgChk = avgSrc.reduce((a, [, x]) => a + (x.chk || 0), 0) / avgSrc.length, chkDays = list.filter(([, x]) => x.chk > 0).length;
   const tile = (label, val, unit, sub, cls = "") => `<div class="ov${cls}"><span class="wt-l">${label}</span><b>${val}<small> ${unit}</small></b>${sub ? `<span class="wt-s">${sub}</span>` : ""}</div>`;
   return `<section class="card"><h3>Overall</h3>${seg}
     <div class="ovgrid">
@@ -980,6 +999,7 @@ function overallCard() {
       ${tile("Protein eaten", big(sum.p), "g", `C ${big(sum.c)} · F ${big(sum.f)} g`, " p")}
       ${tile("Average a day", big(avg.kcal), "kcal", g.kcal ? `goal ${big(g.kcal)} · ${Math.round(avg.kcal / g.kcal * 100)}%` : "")}
       ${tile("Protein a day", big(avg.p), "g", g.p ? `goal ${big(g.p)} · ${Math.round(avg.p / g.p * 100)}%` : "", " p")}
+      ${tile("Chicken eaten", chk >= 1000 ? (chk / 1000).toFixed(1) : big(chk), chk >= 1000 ? "kg" : "g", chk ? `about ${big(avgChk)} g a day · on ${chkDays} day${chkDays == 1 ? "" : "s"}` : "none in this range yet", " wide")}
     </div>
     ${done.length ? `<p class="muted" style="margin:12px 0 0">Calorie goal hit on <b style="color:var(--text)">${hit} of ${done.length}</b> finished day${done.length == 1 ? "" : "s"}. Averages leave out today, which isn't over yet.</p>` : ""}
   </section>`;
@@ -989,10 +1009,10 @@ async function allDayTotals() {
   const tot = {};
   if (db) {
     await withTimeout(loadSummary(), 9000, false, "summary for history");
-    for (const [d, v] of Object.entries(state.sum || {})) if (v) tot[d] = { t: { kcal: v[0], p: v[1], c: v[2], f: v[3] }, n: v[4] };
+    for (const [d, v] of Object.entries(state.sum || {})) if (v) tot[d] = { t: { kcal: v[0], p: v[1], c: v[2], f: v[3] }, n: v[4], chk: v[5] || 0 };
   }
   // Days open in this session are always the freshest.
-  for (const d of Object.keys(state.log)) if (!db || loadedDays.has(d)) tot[d] = { t: dayTotal(d), n: dayEntries(d).length };
+  for (const d of Object.keys(state.log)) if (!db || loadedDays.has(d)) tot[d] = { t: dayTotal(d), n: dayEntries(d).length, chk: dayChicken(d) };
   return tot;
 }
 async function calendarDialog(month) {
@@ -1443,8 +1463,9 @@ If it is neither, reply {"type": "none", "note": "what you can see"}.`, { images
 }
 
 function pushEntry(meal, e) {
-  const now = new Date(), at = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`;
-  (state.log[ui.date] ||= []).push({ id: uid(), meal, at, ...e }); markDay(ui.date);
+  const now = new Date(), at = `${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`, x = { id: uid(), meal, at, ...e };
+  const chk = Math.round(entryChicken(x)); if (chk) x.chk = chk; // kept with the entry, so later recipe edits don't rewrite history
+  (state.log[ui.date] ||= []).push(x); markDay(ui.date);
 }
 
 function ingDialog(id, prefill, afterSave) {
