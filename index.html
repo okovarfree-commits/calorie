@@ -403,7 +403,7 @@ function withTimeout(promise, ms, fallback, label) {
 // ---------- diagnostics ----------
 // A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
 // account database every few seconds, so a "it got stuck" report can be traced afterwards.
-const APP_VERSION = "2026-10-29a";
+const APP_VERSION = "2026-10-29b";
 const DEVICE = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "phone" : "computer";
 const DIAG = []; let diagDirty = false, diagProblem = false, diagLastWrite = 0;
 function diag(ev, detail = "") {
@@ -456,7 +456,9 @@ function save() {
 // Per-day totals kept in one small "app/summary" document ({ v, days: { "YYYY-MM-DD": [kcal, p, c, f, items, chicken g] } }),
 // so the calendar and the Profile summary read one document instead of every day ever logged.
 // SUM_V goes up when a column is added; an older summary is then rebuilt once from the saved days.
-const SUM_V = 2;
+// (3: version 2 could save old rows without chicken when the live update arrived during the rebuild.)
+const SUM_V = 3, SUM_COLS = 6;
+const sumCurrent = v => v === null || (Array.isArray(v) && v.length >= SUM_COLS);
 const sumRow = es => { const t = es.reduce((a, e) => add(a, e), ZERO()); return [Math.round(t.kcal), Math.round(t.p * 10) / 10, Math.round(t.c * 10) / 10, Math.round(t.f * 10) / 10, es.length, Math.round(es.reduce((g, e) => g + entryChicken(e), 0))]; };
 const daySum = d => { const es = dayEntries(d); return es.length ? sumRow(es) : null; };
 let sumChain = Promise.resolve(), sumReady = null;
@@ -477,7 +479,9 @@ function loadSummary() {
     if (!q) { sumReady = null; return false; }
     const sum = {};
     q.docs.forEach(x => { const es = x.data().entries || []; if (es.length) sum[x.id] = sumRow(es); });
-    state.sum = { ...sum, ...(state.sum || {}) };
+    // Days already saved in the new format this session win; anything older is replaced by the rebuilt rows.
+    const fresh = Object.fromEntries(Object.entries(state.sum || {}).filter(([, v]) => sumCurrent(v)));
+    state.sum = { ...sum, ...fresh };
     await withTimeout(db.doc("app/summary").set({ v: SUM_V, days: state.sum }), 15000, null, "save summary").catch(() => {});
     diag("summary-built", Object.keys(sum).length + " days");
     return true;
@@ -579,7 +583,7 @@ async function connect() {
     }, () => {});
     // Today's log is already in hand; the live subscription only picks up later changes.
     if (dayDone) watchDay(day); else await withTimeout(watchDay(ui.date), 8000);
-    setTimeout(() => { loadSummary(); handle.doc("app/summary").onSnapshot(sn => { if (sn.exists) state.sum = { ...(state.sum || {}), ...(sn.data().days || {}) }; }, () => {}); }, 1500);
+    setTimeout(() => { loadSummary(); handle.doc("app/summary").onSnapshot(sn => { if (sn.exists && (sn.data().v || 1) >= SUM_V) state.sum = { ...(state.sum || {}), ...(sn.data().days || {}) }; }, () => {}); }, 1500);
   } catch { syncNotice("Couldn't reach your saved data. Check your connection and reload the app."); }
   ui.loading = false; render();
 }
