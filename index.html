@@ -385,7 +385,7 @@ function withTimeout(promise, ms, fallback, label) {
 // ---------- diagnostics ----------
 // A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
 // account database every few seconds, so a "it got stuck" report can be traced afterwards.
-const APP_VERSION = "2026-10-29c";
+const APP_VERSION = "2026-11-20a";
 const DEVICE = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "phone" : "computer";
 const DIAG = []; let diagDirty = false, diagProblem = false, diagLastWrite = 0;
 function diag(ev, detail = "") {
@@ -862,7 +862,7 @@ function ensureIngredient(name, n) {
   const i = { id: uid(), name: n.name || name.trim(), kcal: n.kcal, p: n.p, c: n.c, f: n.f, src: n.src, ...(n.pieceG > 0 && { pieceG: n.pieceG, piece: n.piece, pieces: n.pieces }) };
   state.ingredients.push(i); return i.id;
 }
-const foodDatalist = () => `<datalist id="foods">${[...new Set([...state.ingredients.map(i => i.name), ...FOODS.map(x => x[0])])].map(n => `<option value="${esc(n)}">`).join("")}</datalist>`;
+const foodDatalist = () => `<datalist id="foods">${[...new Set([...state.ingredients.map(i => i.name), ...FOODS.map(x => x[0])])].sort(byName).map(n => `<option value="${esc(n)}">`).join("")}</datalist>`;
 
 // ---------- dialog helper ----------
 const dlg = document.getElementById("dlg");
@@ -1059,7 +1059,7 @@ const recipeCats = rc => { const m = perServing(rc); return CATS.filter(c => c[3
 
 function recipeCards() {
   const q = norm(ui.recQ || ""), cat = ui.recCat || "all";
-  const list = [...state.recipes].sort((a, b) => (b.fav || 0) - (a.fav || 0) || byName(a.name, b.name))
+  const list = [...state.recipes].sort((a, b) => byName(a.name, b.name))
     .filter(rc => (cat === "all" || recipeCats(rc).includes(cat)) && q.every(w => norm(rc.name).some(x => x.startsWith(w))));
   if (!list.length) return `<p class="muted" style="text-align:center;margin:28px 0">No recipes ${cat === "all" ? "" : `in ${CATS.find(c => c[0] === cat)[1].toLowerCase()} `}${q.length ? `matching "${esc(ui.recQ)}"` : ""}.</p>`;
   return list.map(rc => { const t = recipeTotal(rc), s = perServing(rc), cs = recipeCats(rc); return `<article class="card">
@@ -1197,7 +1197,7 @@ function shopText() {
 
 // ---------- forms ----------
 function entryDialog(meal, preRecipe, preFood) {
-  const favs = state.recipes.filter(x => x.fav);
+  const favs = state.recipes.filter(x => x.fav).sort((a, b) => byName(a.name, b.name));
   openDlg(`<h3>${meal === "Snack" ? "Log food" : `Add to ${meal}`}</h3>
   ${favs.length ? `<p class="eyebrow" style="margin-top:6px">Favourites</p><div class="chips" id="favs">${favs.map(x => `<button type="button" class="chip" data-fav="${x.id}">${I.star.replace("<svg", `<svg style="color:var(--c);width:15px;height:15px"`)}${esc(x.name)}</button>`).join("")}</div>` : ""}
   ${ui.scan ? `<div class="row" style="margin-top:12px"><button type="button" id="scanBtn" class="grow">${I.camera}Photo of food or label</button><button type="button" id="scanPick" class="small" style="min-height:44px">From photos</button></div>` : ""}
@@ -1208,7 +1208,7 @@ function entryDialog(meal, preRecipe, preFood) {
     const opts = (arr) => arr.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join("");
     const draw = () => {
       const t = f.type.value;
-      fields.innerHTML = t === "recipe" ? (state.recipes.length ? `<label>Recipe</label><select name="ref">${opts(state.recipes)}</select>
+      fields.innerHTML = t === "recipe" ? (state.recipes.length ? `<label>Recipe</label><select name="ref">${opts([...state.recipes].sort((a, b) => byName(a.name, b.name)))}</select>
           <label class="inline" style="margin-top:10px"><input type="checkbox" name="mkdef"> <span id="defLbl"></span></label>
           <label>Servings eaten</label><input name="amt" inputmode="decimal" value="1">` : `<p class="muted">No recipes yet.</p>`)
         : t === "ingredient" ? `${foodDatalist()}<label>Food</label><input list="foods" name="food" placeholder="e.g. banana"><label>Amount</label><div class="row"><input name="amt" inputmode="decimal" value="100" class="grow"><span id="unit" class="muted" style="min-width:2em">g</span></div><p class="muted" id="fst"></p>`
