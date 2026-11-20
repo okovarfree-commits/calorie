@@ -385,7 +385,7 @@ function withTimeout(promise, ms, fallback, label) {
 // ---------- diagnostics ----------
 // A small rolling log (last 60 events: taps, errors, time-outs, freezes) saved to "app/diag" in the
 // account database every few seconds, so a "it got stuck" report can be traced afterwards.
-const APP_VERSION = "2026-11-20a";
+const APP_VERSION = "2026-11-20b";
 const DEVICE = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? "phone" : "computer";
 const DIAG = []; let diagDirty = false, diagProblem = false, diagLastWrite = 0;
 function diag(ev, detail = "") {
@@ -619,7 +619,7 @@ const recipeChicken = rc => rc.items.reduce((g, it) => { const i = ing(it.ingId)
 // the recipe with the same name ("2 servings") or, for a chicken food logged on its own, its grams ("200 g").
 function entryChicken(e) {
   if (typeof e.chk === "number") return e.chk;
-  const amt = e.amount || "", sv = /^([\d.]+) servings?$/.exec(amt), rc = sv && state.recipes.find(x => x.name === e.name);
+  const amt = e.amount || "", sv = /^([\d.]+) servings?$/.exec(amt), rc = sv && (state.recipes.find(x => x.name === e.name) || state.recipes.find(x => x.aka?.includes(e.name)));
   if (rc) return num(sv[1]) * recipeChicken(rc);
   const g = isChicken(e.name) && /([\d.]+)\s*g\)?$/.exec(amt);
   return g ? num(g[1]) : 0;
@@ -783,9 +783,9 @@ const PIECE_BY_NAME = new Map(); // food name -> built-in piece size (or null), 
 function pieceOf(i) {
   if (!i) return null;
   if (i.pieceG > 0) return { g: i.pieceG, one: i.piece || "piece", many: i.pieces || (i.piece ? i.piece + "s" : "pieces") };
-  const k = i.name, hit = PIECE_BY_NAME.get(k);
+  const names = [i.name, ...(i.aka || [])], k = names.join("|"), hit = PIECE_BY_NAME.get(k);
   if (hit !== undefined) return hit;
-  const nk = norm(k).join(" "), b = FOOD_INDEX.find(x => x.pieceG && x.keys.some(key => key.join(" ") === nk));
+  const nks = names.map(n => norm(n).join(" ")), b = FOOD_INDEX.find(x => x.pieceG && x.keys.some(key => nks.includes(key.join(" "))));
   const res = b ? { g: b.pieceG, one: b.piece, many: b.pieces } : null;
   PIECE_BY_NAME.set(k, res); return res;
 }
@@ -846,7 +846,10 @@ async function lookupAIRaw(query, signal) {
     return { name: String(j.name).slice(0, 60), kcal: Math.round(j.kcal), p: j.p, c: j.c, f: j.f, src: "estimated by Claude from typical values" };
   } catch { return null; }
 }
-const ingByName = name => { const k = norm(name).join(" "); return state.ingredients.find(i => norm(i.name).join(" ") === k); };
+// Same words in any order count as the same food ("Yogurt, vanilla" = "vanilla yogurt"), and a renamed food
+// still answers to its earlier names (aka), so typing an old name doesn't create a duplicate.
+const nameKey = s => norm(s).sort().join(" ");
+const ingByName = name => { const k = nameKey(name); return state.ingredients.find(i => nameKey(i.name) === k) || state.ingredients.find(i => i.aka?.some(a => nameKey(a) === k)); };
 
 // Nutrition for a typed name: your saved ingredient, else built-in table, else online average.
 async function resolveFood(name, skipOwn = false) {
@@ -862,7 +865,9 @@ function ensureIngredient(name, n) {
   const i = { id: uid(), name: n.name || name.trim(), kcal: n.kcal, p: n.p, c: n.c, f: n.f, src: n.src, ...(n.pieceG > 0 && { pieceG: n.pieceG, piece: n.piece, pieces: n.pieces }) };
   state.ingredients.push(i); return i.id;
 }
-const foodDatalist = () => `<datalist id="foods">${[...new Set([...state.ingredients.map(i => i.name), ...FOODS.map(x => x[0])])].sort(byName).map(n => `<option value="${esc(n)}">`).join("")}</datalist>`;
+// Your foods plus the built-in ones you don't already have under another name (e.g. "White rice (dry)" when you have "Rice, white (dry)").
+const foodDatalist = () => { const own = new Set(state.ingredients.flatMap(i => [i.name, ...(i.aka || [])]).map(nameKey));
+  return `<datalist id="foods">${[...new Set([...state.ingredients.map(i => i.name), ...FOODS.map(x => x[0]).filter(n => !own.has(nameKey(n)))])].sort(byName).map(n => `<option value="${esc(n)}">`).join("")}</datalist>`; };
 
 // ---------- dialog helper ----------
 const dlg = document.getElementById("dlg");
@@ -1054,7 +1059,8 @@ const CATS = [
   ["carb", "High carb", "45%+ of its calories from carbs", m => m.kcal > 0 && m.c * 4 / m.kcal >= 0.45],
 ];
 // Plain case-insensitive A–Z: the browser's locale-aware sorting loads locale data first, which cost ~100 ms on a phone.
-const byName = (a, b) => { const x = a.toLowerCase(), y = b.toLowerCase(); return x < y ? -1 : x > y ? 1 : 0; };
+// Commas are ignored so "Chocolate, dark" sorts with "Chocolate dark…", not after "Chocolate roll".
+const byName = (a, b) => { const x = a.toLowerCase().replace(/,/g, ""), y = b.toLowerCase().replace(/,/g, ""); return x < y ? -1 : x > y ? 1 : 0; };
 const recipeCats = rc => { const m = perServing(rc); return CATS.filter(c => c[3](m)).map(c => c[0]); };
 
 function recipeCards() {
@@ -1759,7 +1765,7 @@ const actions = {
   },
   editRecipe: v => recipeDialog(v),
   favRecipe: v => { const rc = state.recipes.find(x => x.id === v); rc.fav = !rc.fav; save(); },
-  dupRecipe: v => { const rc = structuredClone(state.recipes.find(x => x.id === v)); rc.id = uid(); rc.name += " (copy)"; rc.fav = false; state.recipes.push(rc); save(); },
+  dupRecipe: v => { const rc = structuredClone(state.recipes.find(x => x.id === v)); rc.id = uid(); rc.name += " (copy)"; rc.fav = false; delete rc.aka; state.recipes.push(rc); save(); },
   delRecipe: async v => { if (await ask("Delete this recipe? Days you already logged keep their numbers.")) { state.recipes = state.recipes.filter(x => x.id !== v); delete state.shop.plan[v]; save(); render(); } },
   export: async () => {
     // Backup includes every logged day, so fetch the ones not loaded yet.
